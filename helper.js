@@ -429,6 +429,9 @@ tools.browserWindow = (template='default', options) => {
 				}
 			}
 			
+			if(win_options.parentID){
+				win_options.parent = BrowserWindow.fromId(win_options.parentID);
+			}
 			win = new BrowserWindow(win_options);
 			let ap = app.getAppPath();
 			if(options.file){ win.loadFile(options.file); }
@@ -443,6 +446,9 @@ tools.browserWindow = (template='default', options) => {
 			if(options.devTools){ win.toggleDevTools(); }
 			win.webContents.once('did-finish-load', () => {
 				if(options.init_data){ win.webContents.send('init_data', options.init_data); }
+				win.webContents.executeJavaScript(/*javascript*/`
+					if(electron_helper) { electron_helper.id = ${win.id};} 
+				`);
 				resolve(win);
 			})
 		}
