@@ -720,7 +720,8 @@ tools.versionInfo = (_target) => {
 	let fragment = document.createRange().createContextualFragment(html).firstElementChild;
 	target.appendChild(fragment);
 	setTimeout(() => {
-		target.removeChild(fragment);
+		let __el = document.querySelector('.helper-versions');
+		__el.parentNode.removeChild(__el)
 		document.getElementsByTagName("head")[0].removeChild(ss);
 	},5000)
 }
