@@ -21,7 +21,7 @@ tools.fs = fs;
 init();
 async function init(){
 	if(context_type == 'browser'){
-		protocol.registerSchemesAsPrivileged([{ scheme: 'raum', privileges: { bypassCSP: true, supportFetchAPI:true } }]);
+		protocol.registerSchemesAsPrivileged([{ scheme: 'raum', privileges: { secure: false, standard:true, stream:true, bypassCSP: true, supportFetchAPI:true } }]);
 		await app.whenReady();
 		mainInit();
 	}
@@ -51,7 +51,7 @@ async function mainInit(){
 	else {
 		fb('Handle File Protocol: raum')
 		protocol.handle('raum', (request) => {
-			let furl = request.url.slice('raum:////'.length);
+			let furl = request.url.slice('raum://'.length);
 			furl = decodeURI(path.normalize(furl));
 			furl = pathToFileURL(furl).toString();
 			return net.fetch(furl);
@@ -611,6 +611,67 @@ tools.readJSON = (fp) => {
 	})
 }
 
+tools.checkFileType = function (fp, filter) {
+	let info = path.parse(fp);
+	let out = false;
+	if(filter.includes(info.ext.toLowerCase())){
+		out = true;
+	}
+	return out;
+}
+
+tools.getFiles = function(fp, filter){
+	return new Promise(async (resolve, reject) => {
+		try {
+			let files = await fs.readdir(fp, {withFileTypes:true});
+			let out = [];
+			for(var i=0; i<files.length; i++){
+				let file = files[i];
+				if(file.isFile()){
+					let p = path.join(fp, file.name);
+					let info = path.parse(p);
+					if(filter){
+						if(filter.includes(info.ext.toLowerCase())){
+							out.push(p);
+						}
+					}
+					else {
+						out.push(p);
+					}
+				}
+			};
+			resolve(out);
+		}
+		catch (err) {
+			reject(err.toString())
+		}
+	})
+}
+
+
+tools.getFilesRecursive = function(fp, filter){
+	return new Promise(async (resolve,reject) => {
+		let all = await tools.getFilesR(fp);
+		let out = [];
+		all.forEach(file => {
+			let info = path.parse(file);
+			if(filter.includes(info.ext.toLowerCase())){
+				out.push(file);
+			}
+		})
+		resolve(out)
+	})
+}
+
+tools.getFilesR = async function(dir, filter) {
+	const dirents = await fs.readdir(dir, { withFileTypes: true });
+	const files = await Promise.all(dirents.map((dirent) => {
+		const res = path.resolve(dir, dirent.name);
+		return dirent.isDirectory() ? tools.getFilesR(res) : res;
+	}));
+	return Array.prototype.concat(...files);
+}
+
 tools.writeJSON = (fp, data) => {
 	return new Promise( async (resolve, reject) => {
 		try {
@@ -624,7 +685,9 @@ tools.writeJSON = (fp, data) => {
 }
 
 tools.getFileURL = (fp) => {
-	return 'raum:////' + fp;
+	let furl = pathToFileURL(fp).href;
+	furl.replace('file://', 'raum://');
+	return furl
 }
 
 tools.loadImage = (fp) => {
@@ -720,7 +783,8 @@ tools.versionInfo = (_target) => {
 	let fragment = document.createRange().createContextualFragment(html).firstElementChild;
 	target.appendChild(fragment);
 	setTimeout(() => {
-		target.removeChild(fragment);
+		let __el = document.querySelector('.helper-versions');
+		__el.parentNode.removeChild(__el)
 		document.getElementsByTagName("head")[0].removeChild(ss);
 	},5000)
 }
@@ -752,6 +816,8 @@ tools.medianAverage = function(ring){
 	}
 	return sum;
 }
+
+
 
 /* This is not done */
 tools.jRequest = function(_url, method, data){
