@@ -21,7 +21,7 @@ tools.fs = fs;
 init();
 async function init(){
 	if(context_type == 'browser'){
-		protocol.registerSchemesAsPrivileged([{ scheme: 'raum', privileges: { bypassCSP: true, supportFetchAPI:true } }]);
+		protocol.registerSchemesAsPrivileged([{ scheme: 'raum', privileges: { secure: false, standard:true, stream:true, bypassCSP: true, supportFetchAPI:true } }]);
 		await app.whenReady();
 		mainInit();
 	}
@@ -51,7 +51,7 @@ async function mainInit(){
 	else {
 		fb('Handle File Protocol: raum')
 		protocol.handle('raum', (request) => {
-			let furl = request.url.slice('raum:////'.length);
+			let furl = request.url.slice('raum://'.length);
 			furl = decodeURI(path.normalize(furl));
 			furl = pathToFileURL(furl).toString();
 			return net.fetch(furl);
@@ -624,7 +624,9 @@ tools.writeJSON = (fp, data) => {
 }
 
 tools.getFileURL = (fp) => {
-	return 'raum:////' + fp;
+	let furl = pathToFileURL(fp).href;
+	furl.replace('file://', 'raum://');
+	return furl
 }
 
 tools.loadImage = (fp) => {
