@@ -13,6 +13,8 @@ const url = require('url');
 const path = require('path');
 const https = require('https');
 const http = require('http');
+const child_process = require('child_process');
+
 const { pathToFileURL } = require('url')
 const tools = {};
 tools.path = path;
@@ -85,6 +87,11 @@ function ipcHandle(name, fnc){
 	ipcMain.handle(name, (e, req) => {
 		return fnc(e, name, req);
 	})
+}
+
+function ipcHandleRenderer(channel, fnc){
+	console.log('Init Channel on Renderer: ' + channel);
+	ipcRenderer.on(channel, fnc)		
 }
 
 /* Window
@@ -465,7 +472,7 @@ tools.sendToMain = (channel, data) => {
 		console.log({channel:channel, data:data})
 	}
 	else {
-		ipcRenderer.send(channel, data);
+		return ipcRenderer.invoke(channel, data);
 	}
 }
 
@@ -882,6 +889,14 @@ tools.subWindow = function(html, options){
 	return win;
 }
 
+tools.isAdmin = function(){
+	return new Promise((resolve, reject) => {
+		child_process.exec('NET SESSION', function(err,so,se) {
+			resolve(se.length === 0 ? true : false);
+    	});
+	})
+}
+
 /* Log
 ###################################################################################
 ################################################################################### */
@@ -942,7 +957,8 @@ let exp = {
 	ipcInvoke	: ipcInvoke,
 	ipcHandle	: ipcHandle,
 	config		: config,
-	log			:log
+	log			:log,
+	ipcHandleRenderer: ipcHandleRenderer
 }
 
 if(context_type != 'browser'){
@@ -950,4 +966,3 @@ if(context_type != 'browser'){
 }
 
 module.exports = exp;
-
