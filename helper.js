@@ -17,8 +17,10 @@ const child_process = require('child_process');
 
 const { pathToFileURL } = require('url')
 const tools = {};
+
 tools.path = path;
 tools.fs = fs;
+
 
 init();
 async function init(){
@@ -42,7 +44,7 @@ async function mainInit(){
 	ipcMain.handle('dialog', dialogCommand);
 	ipcMain.handle('shell', shellCommand);
 	ipcMain.handle('tools', toolsCommand);
-	
+
 	if(protocol.registerFileProtocol){
 		fb('Register File Protocol: raum')
 		protocol.registerFileProtocol('raum', (request, callback) => {
@@ -63,6 +65,7 @@ async function mainInit(){
 	tools.user_data = app.getPath('userData');
 	tools.temp_path = path.join(tools.user_data, 'temp');
 	let req = await tools.ensureDir(tools.temp_path);
+	
 	fb('Helper Temp Dir ' + req);
 	app.on('will-quit', exitApp);
 }
@@ -264,7 +267,7 @@ let fnc_app = {
 	isPackaged: async () => { return await ipcRenderer.invoke('app', {command:'isPackaged'})},
 	getAppPath: async () => { return await ipcRenderer.invoke('app', {command:'getAppPath'})},
 	getPath: async (name) => { return await ipcRenderer.invoke('app', {command:'getPath', name:name})},
-
+	getName: async () => { return await ipcRenderer.invoke('app', {command:'getName'})},
 	getExecPath: async () => { return await ipcRenderer.invoke('app', {command:'getExecPath'})},
 	getVersions: async () => { return await ipcRenderer.invoke('app', {command:'getVersions'})},
 }
@@ -284,7 +287,9 @@ function appCommand(e, req){
 	if(command == 'getPath'){
 		reply = app.getPath(req.name);
 	}
-
+	if(command == 'getName'){
+		reply = app.getName();
+	}
 	if(command == 'getExecPath'){
 		var ar = process.execPath.split( path.sep );
 		ar.length -= 2;
