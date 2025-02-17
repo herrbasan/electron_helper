@@ -31,7 +31,7 @@ async function init(){
 	}
 	else {
 		fb('Helper Remote Init' + version);
-		ipcRenderer.on('log', (e, msg) => { console.log(e.senderId, msg) });
+		//ipcRenderer.on('log', (e, msg) => { console.log(e.senderId, msg) });
 	}
 }
 
