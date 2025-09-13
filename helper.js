@@ -9,7 +9,7 @@ const electron = require('electron');
 const {app, net, protocol, ipcMain, ipcRenderer, BrowserWindow, screen, dialog, shell} = electron;
 const _fs = require('fs');
 const fs = _fs.promises;
-const url = require('url');
+
 const path = require('path');
 const https = require('https');
 const http = require('http');
