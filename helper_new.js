@@ -4,6 +4,24 @@
 const context_type = process.type;
 const version = '1.0.5 - 2023_05_29';
 
+// Legacy mode: if set to '1', preserve original behavior for compatibility.
+const legacyMode = (process && process.env && process.env.HELPER_LEGACY === '1');
+
+// Install process-level handlers early (preload) to surface uncaught exceptions/rejections
+// Only enable these added handlers when NOT in legacyMode to avoid changing behavior.
+if (!legacyMode) {
+	try {
+		if (typeof process !== 'undefined' && process) {
+			process.on && process.on('uncaughtException', (err) => {
+				try { console.error('Renderer process uncaughtException:', err && (err.stack || err)); } catch(e){}
+			});
+			process.on && process.on('unhandledRejection', (reason) => {
+				try { console.error('Renderer process unhandledRejection:', reason && (reason.stack || reason)); } catch(e){}
+			});
+		}
+	} catch (e) {}
+}
+
 
 const electron = require('electron');
 const {app, net, protocol, ipcMain, ipcRenderer, BrowserWindow, screen, dialog, shell} = electron;
@@ -18,11 +36,16 @@ const child_process = require('child_process');
 const { pathToFileURL } = require('url')
 const tools = {};
 
+let fnc_window = {};
+let fnc_global = {};
+let fnc_screen = {};
+let fnc_app = {};
+let fnc_dialog = {};
+let fnc_shell = {};
+let fnc_test = {};
+
 tools.path = path;
 tools.fs = fs;
-
-
-init();
 async function init(){
 	if(context_type == 'browser'){
 		protocol.registerSchemesAsPrivileged([{ scheme: 'raum', privileges: { secure: false, standard:true, stream:true, bypassCSP: true, supportFetchAPI:true } }]);
@@ -31,18 +54,30 @@ async function init(){
 	}
 	else {
 		fb('Helper Remote Init' + version);
+		window.electron_helper = {};
+		// Install renderer window error handlers to forward useful stacks to main terminal
+		if (!legacyMode) {
+			try {
+				if (typeof window !== 'undefined' && window) {
+					window.addEventListener('error', (ev) => {
+						console.error('Renderer window error:', ev && ev.message, ev && ev.error && ev.error.stack ? ev.error.stack : ev.error);
+					});
+					window.addEventListener('unhandledrejection', (ev) => {
+						console.error('Renderer unhandledRejection:', ev && ev.reason && (ev.reason.stack || ev.reason));
+					});
+				}
+			} catch (err) {
+				console.error('Failed to install renderer error handlers', err);
+			}
+		}
+		initApis();
 		//ipcRenderer.on('log', (e, msg) => { console.log(e.senderId, msg) });
 	}
 }
 
 async function mainInit(){
 	fb('Helper Main Init ' + version)
-	ipcMain.handle('window', windowCommand);
-	ipcMain.handle('global', globalCommand);
-	ipcMain.handle('screen', screenCommand);
-	ipcMain.handle('app', appCommand);
-	ipcMain.handle('dialog', dialogCommand);
-	ipcMain.handle('shell', shellCommand);
+	initApis();
 	ipcMain.handle('tools', toolsCommand);
 
 	if(protocol.registerFileProtocol){
@@ -78,263 +113,340 @@ async function exitApp(e){
 }
 
 
-/* IPC
+/* IPC - Inter-Process Communication Utilities
 ###################################################################################
-################################################################################### */
+###################################################################################
+ * Low-level utilities for Electron IPC. ipcHandle sets up endpoints in main process first,
+ * then ipcInvoke calls them from renderer. ipcHandleRenderer listens for events.
+ */
+function ipcHandle(name, fnc){
+    fb('Init Channel on Main: ' + name);
+    ipcMain.handle(name, (e, req) => {
+        return fnc(e, name, req);
+    })
+}
+
 let ipcInvoke = async (name, payload) => { 
-	return await ipcRenderer.invoke(name, payload);
+    return await ipcRenderer.invoke(name, payload);
 };
 
-function ipcHandle(name, fnc){
-	fb('Init Channel on Main: ' + name);
-	ipcMain.handle(name, (e, req) => {
-		return fnc(e, name, req);
-	})
-}
-
 function ipcHandleRenderer(channel, fnc){
-	console.log('Init Channel on Renderer: ' + channel);
-	ipcRenderer.on(channel, fnc)		
+    console.log('Init Channel on Renderer: ' + channel);
+    ipcRenderer.on(channel, fnc)		
 }
 
-/* Window
-###################################################################################
+let globalStorage = {}; // Storage for global data shared between main and renderer
+
+/* Unified API Initialization
 ################################################################################### */
-
-let fnc_window = {
-	close: async () => { return await ipcRenderer.invoke('window', {command:'close'}) },
-	show: async () => { return await ipcRenderer.invoke('window', {command:'show'}) },
-	focus: async () => { return await ipcRenderer.invoke('window', {command:'focus'}) },
-	hide: async () => { return await ipcRenderer.invoke('window', {command:'hide'}) },
-	toggleDevTools: async () => { return await ipcRenderer.invoke('window', {command:'toggleDevTools'}) },
-	setPosition: async (x, y) => { return await ipcRenderer.invoke('window', {command:'setPosition', data:{x:x, y:y}}) },
-	setBounds: async (arg) => { return await ipcRenderer.invoke('window', {command:'setBounds', data:arg}) },
-	setFullScreen: async (arg) => { return await ipcRenderer.invoke('window', {command:'setFullScreen', data:arg}) },
-	isFullScreen: async () => { return await ipcRenderer.invoke('window', {command:'isFullScreen'}) },
-	isVisible: async () => { return await ipcRenderer.invoke('window', {command:'isVisible'}) },
-	getBounds: async () => { return await ipcRenderer.invoke('window', {command:'getBounds'}) },
-	getPosition: async () => { return await ipcRenderer.invoke('window', {command:'getPosition'}) },
-	getId: async () => { return await ipcRenderer.invoke('window', {command:'getId'}) },
-	setSize: async (width, height) => { return await ipcRenderer.invoke('window', {command:'setSize', data:{width:width, height:height} })},
-	center: async () => { return await ipcRenderer.invoke('window', {command:'center'}) },
-	hook_event: async (event_name, cb) => {
-		let event_id = tools.id();
-		let temp = await ipcRenderer.invoke('window', {command:'hook_event', data:event_name, event_id:event_id});
-		return ipcRenderer.on('window_event' + event_id, cb);
-	}
-}
-
-function windowCommand(e, req){
-	let browserWindow = BrowserWindow.fromWebContents(e.sender);
-	let command = req.command;
-	let data = req.data;
-	let event_id = req.event_id;
-	let reply = {status:true};
-	if(command == 'close'){
-		browserWindow.close();
-	}
-	if(command == 'show'){
-		browserWindow.show();
-	}
-	if(command == 'focus'){
-		browserWindow.focus();
-	}
-	if(command == 'hide'){
-		browserWindow.hide();
-	}
-	if(command == 'toggleDevTools'){
-		browserWindow.toggleDevTools();
-	}
-	if(command == 'setPosition'){
-		browserWindow.setPosition(data.x, data.y);
-	}
-	if(command == 'setBounds'){
-		browserWindow.setBounds(data);
-	}
-	if(command == 'setFullScreen'){
-		browserWindow.setFullScreen(data);
-	}
-	if(command == 'isFullScreen'){
-		reply = browserWindow.isFullScreen();
-	}
-	if(command == 'isVisible'){
-		reply = browserWindow.isVisible();
-	}
-	if(command == 'getBounds'){
-		reply = browserWindow.getBounds();
-	}
-	if(command == 'getPosition'){
-		reply = browserWindow.getBounds();
-	}
-	if(command == 'getId'){
-		reply = browserWindow.id;
-	}
-	if(command == 'setSize'){
-		reply = browserWindow.setSize(data.width, data.height);
-	}
-	if(command == 'center'){
-		reply = browserWindow.center();
-	}
-	if(command == 'hook_event'){
-		fb('Hooked Event: ' + data)
-		//browserWindow.on(data, (_event, _data) => { _event.sender.send('window_event' + event_id, {type:data, data:_data}) }) // this makes no sense
-		browserWindow.on(data, (_event, _data) => { browserWindow.send('window_event' + event_id, {type:data, data:_data})})
-	}
-	return reply;
-}
-
-/* Global
-###################################################################################
-################################################################################### */
-
-let fnc_global = {
-	get: async (name, clone=true) => { 
-		let req = await ipcRenderer.invoke('global', {command:'get', name:name, clone:clone})
-		let out = {};
-		if(clone){
-			try {
-				out = JSON.parse(req.data);
-			}
-			catch(error){
-				out = {error:error};
-			}
-		}
-		else {
-			out = req.data;
-		}
-		return out;
-	},
-	set: async (name, data) => { return await ipcRenderer.invoke('global', {command:'set', name:name, data:data}) },
-}
-
-function globalCommand(e, req){
-	let command = req.command;
-	let data = req.data;
-	let name = req.name;
-	let reply = {status:false};
-	if(command == 'get'){
-		reply.status = true;
-		if(req.clone){
-			reply.data = JSON.stringify(global[name]);
-		}
-		else {
-			reply.data = global[name];
-		}
-	}
-	if(command == 'set'){
-		reply.status = true;
-		global[name] = data;
-	}
-	return reply;
-}
-
-
-/* Screen
-###################################################################################
-################################################################################### */
-
-let fnc_screen = {
-	getPrimaryDisplay: async () => {
-		let req = await ipcRenderer.invoke('screen', {command:'getPrimaryDisplay'})
-		return JSON.parse(req.data);
-	},
-	getAllDisplays: async () => {
-		let req = await ipcRenderer.invoke('screen', {command:'getAllDisplays'})
-		return JSON.parse(req.data);
-	}
-}
-
-function screenCommand(e, req){
-	let command = req.command;
-	let reply = {status:false};
-	if(command == 'getPrimaryDisplay'){
-		reply.status = true;
-		reply.data = JSON.stringify(screen.getPrimaryDisplay());
-	}
-	if(command == 'getAllDisplays'){
-		reply.status = true;
-		reply.data = JSON.stringify(screen.getAllDisplays());
-	}
-	return reply;
-}
-
-/* App
-###################################################################################
-################################################################################### */
-
-let fnc_app = {
-	exit: async () => { return await ipcRenderer.invoke('app', {command:'exit'})},
-	isPackaged: async () => { return await ipcRenderer.invoke('app', {command:'isPackaged'})},
-	getAppPath: async () => { return await ipcRenderer.invoke('app', {command:'getAppPath'})},
-	getPath: async (name) => { return await ipcRenderer.invoke('app', {command:'getPath', name:name})},
-	getName: async () => { return await ipcRenderer.invoke('app', {command:'getName'})},
-	getExecPath: async () => { return await ipcRenderer.invoke('app', {command:'getExecPath'})},
-	getVersions: async () => { return await ipcRenderer.invoke('app', {command:'getVersions'})},
-}
-
-function appCommand(e, req){
-	let command = req.command;
-	let reply = {status:true};
-	if(command == 'exit'){
-		tools.cleanUpTemp(true).then(app.exit);
-	}
-	if(command == 'isPackaged'){
-		reply = app.isPackaged;
-	}
-	if(command == 'getAppPath'){
-		reply = app.getAppPath();
-	}
-	if(command == 'getPath'){
-		reply = app.getPath(req.name);
-	}
-	if(command == 'getName'){
-		reply = app.getName();
-	}
-	if(command == 'getExecPath'){
-		var ar = process.execPath.split( path.sep );
-		ar.length -= 2;
-		reply = ar.join(path.sep) + path.sep;
-	}
-	if(command == 'getVersions'){
-		reply = JSON.parse(JSON.stringify(process.versions));
-	}
-	return reply;
-}
-
-
-/* Dialog
-###################################################################################
-################################################################################### */
-
-let fnc_dialog = {
-	showOpenDialog: async (options) => { return await ipcRenderer.invoke('dialog', {command:'showOpenDialog', data:options})},
-}
-
-async function dialogCommand(e, req){
-	let browserWindow = BrowserWindow.fromWebContents(e.sender);
-	let command = req.command;
-	let reply = {status:false};
-	if(command == 'showOpenDialog'){
-		reply = await dialog.showOpenDialog(browserWindow, req.data);
-	}
-	return reply;
-}
-
-/* Shell
-###################################################################################
-################################################################################### */
-
-let fnc_shell = {
-	showItemInFolder: async (fp) => { return await ipcRenderer.invoke('shell', {command:'showItemInFolder', data:fp})},
-}
-
-async function shellCommand(e, req){
-	let command = req.command;
-	let reply = {status:false};
-	if(command == 'showItemInFolder'){
-		reply = shell.showItemInFolder(req.data);
-	}
-	return reply;
+function initApis() {
+    if (context_type == 'browser') {
+        // Main Process: Define APIs with handle functions
+        const apis = {
+            window: {
+                close: {
+                    handle: (e, req) => { BrowserWindow.fromWebContents(e.sender).close(); return {status:true}; }
+                },
+                show: {
+                    handle: (e, req) => { BrowserWindow.fromWebContents(e.sender).show(); return {status:true}; }
+                },
+                focus: {
+                    handle: (e, req) => { BrowserWindow.fromWebContents(e.sender).focus(); return {status:true}; }
+                },
+                hide: {
+                    handle: (e, req) => { BrowserWindow.fromWebContents(e.sender).hide(); return {status:true}; }
+                },
+                toggleDevTools: {
+                    handle: (e, req) => { BrowserWindow.fromWebContents(e.sender).toggleDevTools(); return {status:true}; }
+                },
+                setPosition: {
+                    handle: (e, req) => { BrowserWindow.fromWebContents(e.sender).setPosition(req.data.x, req.data.y); return {status:true}; }
+                },
+                setBounds: {
+                    handle: (e, req) => { BrowserWindow.fromWebContents(e.sender).setBounds(req.data); return {status:true}; }
+                },
+                setFullScreen: {
+                    handle: (e, req) => { BrowserWindow.fromWebContents(e.sender).setFullScreen(req.data); return {status:true}; }
+                },
+                isFullScreen: {
+                    handle: (e, req) => BrowserWindow.fromWebContents(e.sender).isFullScreen()
+                },
+                isVisible: {
+                    handle: (e, req) => BrowserWindow.fromWebContents(e.sender).isVisible()
+                },
+                getBounds: {
+                    handle: (e, req) => BrowserWindow.fromWebContents(e.sender).getBounds()
+                },
+                getPosition: {
+                    handle: (e, req) => BrowserWindow.fromWebContents(e.sender).getPosition()
+                },
+                getId: {
+                    handle: (e, req) => BrowserWindow.fromWebContents(e.sender).id
+                },
+                setSize: {
+                    handle: (e, req) => { BrowserWindow.fromWebContents(e.sender).setSize(req.data.width, req.data.height); return {status:true}; }
+                },
+                center: {
+                    handle: (e, req) => { BrowserWindow.fromWebContents(e.sender).center(); return {status:true}; }
+                },
+                hook_event: {
+                    handle: (e, req) => {
+                        fb('Hooked Event: ' + req.data);
+                        let browserWindow = BrowserWindow.fromWebContents(e.sender);
+                        browserWindow.on(req.data, (_event, _data) => { browserWindow.send('window_event' + req.event_id, {type:req.data, data:_data}); });
+                        return {status:true};
+                    }
+                }
+            },
+            global: {
+                get: {
+                    handle: (e, req) => {
+                        let reply = {status:true};
+                        if(req.clone){
+                            reply.data = JSON.stringify(globalStorage[req.name]);
+                        }
+                        else {
+                            reply.data = globalStorage[req.name];
+                        }
+                        return reply;
+                    }
+                },
+                set: {
+                    handle: (e, req) => {
+                        globalStorage[req.name] = req.data;
+                        return {status:true};
+                    }
+                }
+            },
+            screen: {
+                getPrimaryDisplay: {
+                    handle: (e, req) => {
+                        return {status:true, data: JSON.stringify(screen.getPrimaryDisplay())};
+                    }
+                },
+                getAllDisplays: {
+                    handle: (e, req) => {
+                        return {status:true, data: JSON.stringify(screen.getAllDisplays())};
+                    }
+                }
+            },
+            app: {
+                exit: {
+                    handle: (e, req) => {
+                        tools.cleanUpTemp(true).then(app.exit);
+                        return {status:true};
+                    }
+                },
+                isPackaged: {
+                    handle: (e, req) => app.isPackaged
+                },
+                getAppPath: {
+                    handle: (e, req) => app.getAppPath()
+                },
+                getPath: {
+                    handle: (e, req) => app.getPath(req.name)
+                },
+                getName: {
+                    handle: (e, req) => app.getName()
+                },
+                getExecPath: {
+                    handle: (e, req) => {
+                        var ar = process.execPath.split(path.sep);
+                        ar.length -= 2;
+                        return ar.join(path.sep) + path.sep;
+                    }
+                },
+                getVersions: {
+                    handle: (e, req) => JSON.parse(JSON.stringify(process.versions))
+                }
+            },
+            dialog: {
+                showOpenDialog: {
+                    handle: async (e, req) => await dialog.showOpenDialog(BrowserWindow.fromWebContents(e.sender), req.data)
+                }
+            },
+            shell: {
+                showItemInFolder: {
+                    handle: (e, req) => shell.showItemInFolder(req.data)
+                }
+            },
+            test: {
+                echo: {
+                    handle: (e, req) => req.data
+                },
+                delay: {
+                    handle: async (e, req) => {
+                        await new Promise(resolve => setTimeout(resolve, req.ms || 100));
+                        return req.data;
+                    }
+                }
+            }
+        };
+        // Set up IPC handlers
+        for (let api in apis) {
+            ipcMain.handle(api, (e, req) => {
+                let command = req.command;
+                if (apis[api][command]) {
+                    return apis[api][command].handle(e, req);
+                }
+                return {status: false};
+            });
+        }
+    } else {
+        // Renderer Process: Define APIs with invoke functions
+        const apis = {
+            window: {
+                close: {
+                    invoke: () => ipcRenderer.invoke('window', {command:'close'})
+                },
+                show: {
+                    invoke: () => ipcRenderer.invoke('window', {command:'show'})
+                },
+                focus: {
+                    invoke: () => ipcRenderer.invoke('window', {command:'focus'})
+                },
+                hide: {
+                    invoke: () => ipcRenderer.invoke('window', {command:'hide'})
+                },
+                toggleDevTools: {
+                    invoke: () => ipcRenderer.invoke('window', {command:'toggleDevTools'})
+                },
+                setPosition: {
+                    invoke: (x, y) => ipcRenderer.invoke('window', {command:'setPosition', data:{x:x, y:y}})
+                },
+                setBounds: {
+                    invoke: (arg) => ipcRenderer.invoke('window', {command:'setBounds', data:arg})
+                },
+                setFullScreen: {
+                    invoke: (arg) => ipcRenderer.invoke('window', {command:'setFullScreen', data:arg})
+                },
+                isFullScreen: {
+                    invoke: () => ipcRenderer.invoke('window', {command:'isFullScreen'})
+                },
+                isVisible: {
+                    invoke: () => ipcRenderer.invoke('window', {command:'isVisible'})
+                },
+                getBounds: {
+                    invoke: () => ipcRenderer.invoke('window', {command:'getBounds'})
+                },
+                getPosition: {
+                    invoke: () => ipcRenderer.invoke('window', {command:'getPosition'})
+                },
+                getId: {
+                    invoke: () => ipcRenderer.invoke('window', {command:'getId'})
+                },
+                setSize: {
+                    invoke: (width, height) => ipcRenderer.invoke('window', {command:'setSize', data:{width:width, height:height}})
+                },
+                center: {
+                    invoke: () => ipcRenderer.invoke('window', {command:'center'})
+                },
+                hook_event: {
+                    invoke: async (event_name, cb) => {
+                        let event_id = tools.id();
+                        let temp = await ipcRenderer.invoke('window', {command:'hook_event', data:event_name, event_id:event_id});
+                        return ipcRenderer.on('window_event' + event_id, cb);
+                    }
+                }
+            },
+            global: {
+                get: {
+                    invoke: async (name, clone=true) => { 
+                        let req = await ipcRenderer.invoke('global', {command:'get', name:name, clone:clone});
+                        let out = {};
+                        if(clone){
+							if(req.data === undefined || req.data === "undefined"){
+								out = undefined;
+							} else {
+                                try {
+                                    out = JSON.parse(req.data);
+                                }
+                                catch(error){
+                                    out = {error:error};
+                                }
+                            }
+                        }
+                        else {
+                            out = req.data;
+                        }
+                        return out;
+                    }
+                },
+                set: {
+                    invoke: async (name, data) => ipcRenderer.invoke('global', {command:'set', name:name, data:data})
+                }
+            },
+            screen: {
+                getPrimaryDisplay: {
+                    invoke: async () => {
+                        let req = await ipcRenderer.invoke('screen', {command:'getPrimaryDisplay'});
+                        return JSON.parse(req.data);
+                    }
+                },
+                getAllDisplays: {
+                    invoke: async () => {
+                        let req = await ipcRenderer.invoke('screen', {command:'getAllDisplays'});
+                        return JSON.parse(req.data);
+                    }
+                }
+            },
+            app: {
+                exit: {
+                    invoke: () => ipcRenderer.invoke('app', {command:'exit'})
+                },
+                isPackaged: {
+                    invoke: () => ipcRenderer.invoke('app', {command:'isPackaged'})
+                },
+                getAppPath: {
+                    invoke: () => ipcRenderer.invoke('app', {command:'getAppPath'})
+                },
+                getPath: {
+                    invoke: (name) => ipcRenderer.invoke('app', {command:'getPath', name:name})
+                },
+                getName: {
+                    invoke: () => ipcRenderer.invoke('app', {command:'getName'})
+                },
+                getExecPath: {
+                    invoke: () => ipcRenderer.invoke('app', {command:'getExecPath'})
+                },
+                getVersions: {
+                    invoke: () => ipcRenderer.invoke('app', {command:'getVersions'})
+                }
+            },
+            dialog: {
+                showOpenDialog: {
+                    invoke: async (options) => ipcRenderer.invoke('dialog', {command:'showOpenDialog', data:options})
+                }
+            },
+            shell: {
+                showItemInFolder: {
+                    invoke: async (fp) => ipcRenderer.invoke('shell', {command:'showItemInFolder', data:fp})
+                }
+            },
+            test: {
+                echo: {
+                    invoke: (data) => ipcRenderer.invoke('test', {command:'echo', data:data})
+                },
+                delay: {
+                    invoke: async (data, ms) => ipcRenderer.invoke('test', {command:'delay', data:data, ms:ms})
+                }
+            }
+        };
+        // Expose API functions
+        for (let api in apis) {
+            window.electron_helper[api] = {};
+            for (let method in apis[api]) {
+                window.electron_helper[api][method] = apis[api][method].invoke;
+            }
+        }
+        fnc_window = window.electron_helper.window;
+        fnc_global = window.electron_helper.global;
+        fnc_screen = window.electron_helper.screen;
+        fnc_app = window.electron_helper.app;
+        fnc_dialog = window.electron_helper.dialog;
+        fnc_shell = window.electron_helper.shell;
+        fnc_test = window.electron_helper.test;
+    }
 }
 
 function config(fp, obj, force){
@@ -441,26 +553,32 @@ tools.browserWindow = (template='default', options) => {
 				}
 			}
 			
-			if(win_options.parentID){
+			if(options && win_options.parentID){
 				win_options.parent = BrowserWindow.fromId(win_options.parentID);
 			}
 			win = new BrowserWindow(win_options);
 			let ap = app.getAppPath();
-			if(options.file){ win.loadFile(options.file); }
-			else if(options.url){ win.loadURL(options.url); }
-			else if(options.html) {
+			if(options && options.file){ win.loadFile(options.file); }
+			else if(options && options.url){ win.loadURL(options.url); }
+			else if(options && options.html) {
 				win.loadURL('data:text/html;charset=UTF-8,' + encodeURIComponent(options.html), { baseURLForDataURL: `file://${ap}/` })
 			}
 			else{
 				let html = /*html*/` <!DOCTYPE html><html><head><title>Electron</title></head><body></body></html>`
 				win.loadURL('data:text/html;charset=UTF-8,' + encodeURIComponent(html), { baseURLForDataURL: `file://${ap}/` })
 			}
-			if(options.devTools){ win.toggleDevTools(); }
+			if(options && options.devTools){ win.toggleDevTools(); }
 			win.webContents.once('did-finish-load', () => {
-				if(options.init_data){ win.webContents.send('init_data', options.init_data); }
-				win.webContents.executeJavaScript(/*javascript*/`
-					if(electron_helper) { electron_helper.id = ${win.id};} 
-				`);
+				if(options && options.init_data){ win.webContents.send('init_data', options.init_data); }
+				if (legacyMode) {
+					win.webContents.executeJavaScript(/*javascript*/`
+						if(electron_helper) { electron_helper.id = ${win.id};} 
+					`);
+				} else {
+					win.webContents.executeJavaScript(/*javascript*/`
+						try{ if(typeof electron_helper !== 'undefined' && electron_helper) { electron_helper.id = ${win.id}; } }catch(e){ console.error('set electron_helper.id failed', e); }
+					`).catch((e) => { console.error('executeJavaScript failed for set id', e); });
+				}
 				resolve(win);
 			})
 		}
@@ -902,6 +1020,8 @@ tools.isAdmin = function(){
 	})
 }
 
+init();
+
 /* Log
 ###################################################################################
 ################################################################################### */
@@ -958,16 +1078,23 @@ let exp = {
 	app			: fnc_app,
 	dialog		: fnc_dialog,
 	shell		: fnc_shell,
+	test		: fnc_test,
 	tools		: tools,
 	ipcInvoke	: ipcInvoke,
 	ipcHandle	: ipcHandle,
 	config		: config,
 	log			:log,
-	ipcHandleRenderer: ipcHandleRenderer
+	ipcHandleRenderer: ipcHandleRenderer,
+	setGlobal	: (name, data) => { globalStorage[name] = data; }
 }
 
 if(context_type != 'browser'){
 	window.electron_helper = exp;
 }
 
-module.exports = exp;
+// Export for require() in main process to match helper.js behavior
+try {
+	if (typeof module !== 'undefined' && module.exports) {
+		module.exports = exp;
+	}
+} catch (e) {}
