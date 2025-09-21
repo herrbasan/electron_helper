@@ -1,26 +1,20 @@
 'use strict';
 
-// Version 1.0.3 - Might be wrong because i'm lazy test
+// Version 1.0.3 - Might be wrong because i'm lazy 
 const context_type = process.type;
 const version = '1.0.5 - 2023_05_29';
 
-// Legacy mode: if set to '1', preserve original behavior for compatibility.
-const legacyMode = (process && process.env && process.env.HELPER_LEGACY === '1');
-
 // Install process-level handlers early (preload) to surface uncaught exceptions/rejections
-// Only enable these added handlers when NOT in legacyMode to avoid changing behavior.
-if (!legacyMode) {
-	try {
-		if (typeof process !== 'undefined' && process) {
-			process.on && process.on('uncaughtException', (err) => {
-				try { console.error('Renderer process uncaughtException:', err && (err.stack || err)); } catch(e){}
-			});
-			process.on && process.on('unhandledRejection', (reason) => {
-				try { console.error('Renderer process unhandledRejection:', reason && (reason.stack || reason)); } catch(e){}
-			});
-		}
-	} catch (e) {}
-}
+try {
+	if (typeof process !== 'undefined' && process) {
+		process.on && process.on('uncaughtException', (err) => {
+			try { console.error('Renderer process uncaughtException:', err && (err.stack || err)); } catch(e){}
+		});
+		process.on && process.on('unhandledRejection', (reason) => {
+			try { console.error('Renderer process unhandledRejection:', reason && (reason.stack || reason)); } catch(e){}
+		});
+	}
+} catch (e) {}
 
 
 const electron = require('electron');
@@ -42,7 +36,6 @@ let fnc_screen = {};
 let fnc_app = {};
 let fnc_dialog = {};
 let fnc_shell = {};
-let fnc_test = {};
 
 tools.path = path;
 tools.fs = fs;
@@ -56,19 +49,17 @@ async function init(){
 		fb('Helper Remote Init' + version);
 		window.electron_helper = {};
 		// Install renderer window error handlers to forward useful stacks to main terminal
-		if (!legacyMode) {
-			try {
-				if (typeof window !== 'undefined' && window) {
-					window.addEventListener('error', (ev) => {
-						console.error('Renderer window error:', ev && ev.message, ev && ev.error && ev.error.stack ? ev.error.stack : ev.error);
-					});
-					window.addEventListener('unhandledrejection', (ev) => {
-						console.error('Renderer unhandledRejection:', ev && ev.reason && (ev.reason.stack || ev.reason));
-					});
-				}
-			} catch (err) {
-				console.error('Failed to install renderer error handlers', err);
+		try {
+			if (typeof window !== 'undefined' && window) {
+				window.addEventListener('error', (ev) => {
+					console.error('Renderer window error:', ev && ev.message, ev && ev.error && ev.error.stack ? ev.error.stack : ev.error);
+				});
+				window.addEventListener('unhandledrejection', (ev) => {
+					console.error('Renderer unhandledRejection:', ev && ev.reason && (ev.reason.stack || ev.reason));
+				});
 			}
+		} catch (err) {
+			console.error('Failed to install renderer error handlers', err);
 		}
 		initApis();
 		//ipcRenderer.on('log', (e, msg) => { console.log(e.senderId, msg) });
@@ -79,6 +70,7 @@ async function mainInit(){
 	fb('Helper Main Init ' + version)
 	initApis();
 	ipcMain.handle('tools', toolsCommand);
+
 
 	if(protocol.registerFileProtocol){
 		fb('Register File Protocol: raum')
@@ -135,7 +127,7 @@ function ipcHandleRenderer(channel, fnc){
     ipcRenderer.on(channel, fnc)		
 }
 
-let globalStorage = {}; // Storage for global data shared between main and renderer
+
 
 /* Unified API Initialization
 ################################################################################### */
@@ -201,20 +193,43 @@ function initApis() {
             global: {
                 get: {
                     handle: (e, req) => {
-                        let reply = {status:true};
-                        if(req.clone){
-                            reply.data = JSON.stringify(globalStorage[req.name]);
-                        }
-                        else {
-                            reply.data = globalStorage[req.name];
-                        }
-                        return reply;
+						// Mirror behavior of helper.js: use Node `global` storage.
+						let reply = {status:true};
+						const val = (typeof global !== 'undefined' && Object.prototype.hasOwnProperty.call(global, req.name)) ? global[req.name] : undefined;
+						if (req.clone) {
+							try {
+								// If the key doesn't exist on the main `global`, return a special
+								// marker so renderer can distinguish missing -> undefined vs null.
+								if (!Object.prototype.hasOwnProperty.call(global, req.name)) {
+									reply.data = JSON.stringify({__missing: true});
+								} else {
+									const stored = global[req.name];
+									if (typeof stored === 'undefined') {
+										reply.data = JSON.stringify({__undefined: true});
+									} else {
+										reply.data = JSON.stringify(stored);
+									}
+								}
+							} catch (err) {
+								reply.data = JSON.stringify({error: String(err)});
+							}
+						} else {
+							reply.data = val;
+						}
+						return reply;
                     }
                 },
                 set: {
                     handle: (e, req) => {
-                        globalStorage[req.name] = req.data;
-                        return {status:true};
+				// Store on Node `global` object to match helper.js semantics
+				let value = req.data;
+				// If renderer sent a special marker for undefined/null, restore it
+				if (value && typeof value === 'object' && value.__is_marker) {
+					if (value.__undefined) value = undefined;
+					else if (value.__null) value = null;
+				}
+				global[req.name] = value;
+				return {status:true};
                     }
                 }
             },
@@ -270,17 +285,6 @@ function initApis() {
                     handle: (e, req) => shell.showItemInFolder(req.data)
                 }
             },
-            test: {
-                echo: {
-                    handle: (e, req) => req.data
-                },
-                delay: {
-                    handle: async (e, req) => {
-                        await new Promise(resolve => setTimeout(resolve, req.ms || 100));
-                        return req.data;
-                    }
-                }
-            }
         };
         // Set up IPC handlers
         for (let api in apis) {
@@ -349,33 +353,39 @@ function initApis() {
                     }
                 }
             },
-            global: {
-                get: {
-                    invoke: async (name, clone=true) => { 
-                        let req = await ipcRenderer.invoke('global', {command:'get', name:name, clone:clone});
-                        let out = {};
-                        if(clone){
-							if(req.data === undefined || req.data === "undefined"){
-								out = undefined;
-							} else {
-                                try {
-                                    out = JSON.parse(req.data);
-                                }
-                                catch(error){
-                                    out = {error:error};
-                                }
-                            }
-                        }
-                        else {
-                            out = req.data;
-                        }
-                        return out;
-                    }
-                },
-                set: {
-                    invoke: async (name, data) => ipcRenderer.invoke('global', {command:'set', name:name, data:data})
-                }
-            },
+			global: {
+				get: {
+					invoke: async (name, clone=true) => { 
+						let req = await ipcRenderer.invoke('global', {command:'get', name:name, clone:clone});
+						let out = {};
+						if(clone){
+							try {
+								out = JSON.parse(req.data);
+								// Interpret main-side markers for missing/undefined
+								if (out && typeof out === 'object'){
+									if (out.__missing === true || out.__undefined === true) out = undefined;
+								}
+							}
+							catch(error){
+								out = {error:error};
+							}
+						}
+						else {
+							out = req.data;
+						}
+						return out;
+					}
+				},
+				set: {
+					invoke: async (name, data) => {
+						let payload = data;
+						if (typeof data === 'undefined') {
+							payload = {__is_marker: true, __undefined: true};
+						}
+						return await ipcRenderer.invoke('global', {command:'set', name:name, data:payload});
+					},
+				}
+			},
             screen: {
                 getPrimaryDisplay: {
                     invoke: async () => {
@@ -422,14 +432,6 @@ function initApis() {
                 showItemInFolder: {
                     invoke: async (fp) => ipcRenderer.invoke('shell', {command:'showItemInFolder', data:fp})
                 }
-            },
-            test: {
-                echo: {
-                    invoke: (data) => ipcRenderer.invoke('test', {command:'echo', data:data})
-                },
-                delay: {
-                    invoke: async (data, ms) => ipcRenderer.invoke('test', {command:'delay', data:data, ms:ms})
-                }
             }
         };
         // Expose API functions
@@ -445,7 +447,6 @@ function initApis() {
         fnc_app = window.electron_helper.app;
         fnc_dialog = window.electron_helper.dialog;
         fnc_shell = window.electron_helper.shell;
-        fnc_test = window.electron_helper.test;
     }
 }
 
@@ -676,6 +677,7 @@ tools.download = async (_url, file, progress) => {
 		return res;
 	}
 }
+
 
 tools.cleanUpTemp = (verbose=false) =>{
 	if(verbose) { fb('cleanup') }
@@ -1078,14 +1080,13 @@ let exp = {
 	app			: fnc_app,
 	dialog		: fnc_dialog,
 	shell		: fnc_shell,
-	test		: fnc_test,
 	tools		: tools,
 	ipcInvoke	: ipcInvoke,
 	ipcHandle	: ipcHandle,
 	config		: config,
 	log			:log,
 	ipcHandleRenderer: ipcHandleRenderer,
-	setGlobal	: (name, data) => { globalStorage[name] = data; }
+	setGlobal	: (name, data) => { if (typeof global !== 'undefined') global[name] = data; }
 }
 
 if(context_type != 'browser'){
