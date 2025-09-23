@@ -1,8 +1,7 @@
 'use strict';
 
-// Version 1.0.3 - Might be wrong because i'm lazy 
 const context_type = process.type;
-const version = '1.0.5 - 2023_05_29';
+const version = '2.0.0 - 2025_09_23';
 
 // Install process-level handlers early (preload) to surface uncaught exceptions/rejections
 try {
@@ -462,30 +461,60 @@ function config(fp, obj, force){
 
 		if(fp === 'user'){ fp = path.join(up, 'config.json'); }
 		cnf.path = fp;
-		if(force){ await fs.unlink(fp) }
+		const backupPath = fp + '.bak';
+
+		if(force){ await fs.unlink(fp).catch(() => {}); await fs.unlink(backupPath).catch(() => {}); }
+
 		cnf.writeFile = async () => { 
-			if(JSON.stringify(cnf.data) != cnf.backup){
+			const currentStr = JSON.stringify(cnf.data);
+			if(currentStr != cnf.backup){
 				fb('Writing Config')
-				cnf.backup = JSON.stringify(cnf.data);
-				return tools.writeJSON(cnf.path, cnf.data)
-				
+				try {
+					if(await tools.fileExists(fp)){
+						const existing = await tools.readJSON(fp);
+						if(JSON.stringify(existing) !== currentStr){
+							await tools.writeJSON(backupPath, existing);
+							fb('Config backup created');
+						}
+					}
+				} catch (e) { fb('Failed to create config backup: ' + e.message); }
+				cnf.backup = currentStr;
+				return tools.writeJSON(cnf.path, cnf.data);
 			}
 		};
+
 		cnf.write = () => {
 			clearTimeout(cnf.timeout);
 			cnf.timeout = setTimeout(cnf.writeFile, 500)
 		}
 		cnf.interval = setInterval(cnf.write, 3000);
+
 		if(!(await tools.fileExists(fp))){
 			await tools.writeJSON(fp, cnf.data);
 			resolve( cnf );
 		}
 		else {
-			cnf.data = await tools.readJSON(fp);
-			resolve( cnf )
+			let loadedData = null;
+			try {
+				loadedData = await tools.readJSON(fp);
+				if(!loadedData || (typeof loadedData === 'object' && Object.keys(loadedData).length === 0)){
+					throw new Error('Config file is empty');
+				}
+				JSON.stringify(loadedData);
+			} catch (e) {
+				fb('Config file corrupted or empty, attempting restore from backup: ' + e.message);
+				try {
+					loadedData = await tools.readJSON(backupPath);
+					await tools.writeJSON(fp, loadedData);
+					fb('Config restored from backup');
+				} catch (backupErr) {
+					fb('Backup restore failed: ' + backupErr.message + ', using default config');
+					loadedData = obj; // fallback to provided obj
+				}
+			}
+			cnf.data = loadedData;
+			resolve( cnf );
 		}
-
-		
 	})
 }
 
@@ -571,15 +600,9 @@ tools.browserWindow = (template='default', options) => {
 			if(options && options.devTools){ win.toggleDevTools(); }
 			win.webContents.once('did-finish-load', () => {
 				if(options && options.init_data){ win.webContents.send('init_data', options.init_data); }
-				if (legacyMode) {
-					win.webContents.executeJavaScript(/*javascript*/`
-						if(electron_helper) { electron_helper.id = ${win.id};} 
-					`);
-				} else {
-					win.webContents.executeJavaScript(/*javascript*/`
-						try{ if(typeof electron_helper !== 'undefined' && electron_helper) { electron_helper.id = ${win.id}; } }catch(e){ console.error('set electron_helper.id failed', e); }
-					`).catch((e) => { console.error('executeJavaScript failed for set id', e); });
-				}
+				win.webContents.executeJavaScript(/*javascript*/`
+					try{ if(typeof electron_helper !== 'undefined' && electron_helper) { electron_helper.id = ${win.id}; } }catch(e){ console.error('set electron_helper.id failed', e); }
+				`).catch((e) => { console.error('executeJavaScript failed for set id', e); });
 				resolve(win);
 			})
 		}
@@ -959,7 +982,7 @@ tools.jRequest = function(_url, method, data){
 		const options = {
 			hostname: _url.hostname,
 			port: _url.port,
-			path: _url.pathname,
+			path: _url.pathname + (_url.search || ''),
 			method: method.toUpperCase(),
 			headers: {
 				'Accept':        	'application/json',
@@ -968,34 +991,36 @@ tools.jRequest = function(_url, method, data){
 		};
 
 		if(options.method == 'POST'){
-			options['Content-Length'] = data.length;
+			options.headers['Content-Type'] = 'application/json';
+			options.headers['Content-Length'] = Buffer.byteLength(data);
 		}
 
-		const req = http.request(options, res => {
-			let data = '';
+		const reqModule = _url.protocol === 'https:' ? https : http;
+		const req = reqModule.request(options, res => {
+			let responseData = '';
 			res.setEncoding('utf8');
 			res.on('data', d => {
-				data += d;
+				responseData += d;
 			});
 			res.on('end', () => {
+				let result;
 				try {
-					data = JSON.parse(data);
+					result = JSON.parse(responseData);
+				} catch {
+					result = { text: responseData };
 				}
-				catch(err) {
-					data = err;
-				}
-				resolve(data);
-			})
+				resolve(result);
+			});
 		});
 
 		req.on('error', error => {
-			reject(error.toString())
+			reject(error.toString());
 		});
 		if(options.method == 'POST'){
 			req.write(data);
 		}
 		req.end();
-	})
+	});
 }
 
 tools.subWindow = function(html, options){

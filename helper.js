@@ -44,6 +44,7 @@ async function mainInit(){
 	ipcMain.handle('dialog', dialogCommand);
 	ipcMain.handle('shell', shellCommand);
 	ipcMain.handle('tools', toolsCommand);
+    ipcMain.handle('test', testCommand);
 
 	if(protocol.registerFileProtocol){
 		fb('Register File Protocol: raum')
@@ -68,6 +69,18 @@ async function mainInit(){
 	
 	fb('Helper Temp Dir ' + req);
 	app.on('will-quit', exitApp);
+}
+
+function testCommand(e, req){
+	const cmd = req.command;
+	if(cmd === 'echo'){
+		return req.data;
+	}
+	if(cmd === 'delay'){
+		const { msg, ms } = req.data || {};
+		return new Promise((resolve) => setTimeout(() => resolve(msg), ms || 100));
+	}
+	return { status: false };
 }
 
 async function exitApp(e){
@@ -122,6 +135,11 @@ let fnc_window = {
 		let temp = await ipcRenderer.invoke('window', {command:'hook_event', data:event_name, event_id:event_id});
 		return ipcRenderer.on('window_event' + event_id, cb);
 	}
+}
+
+let fnc_test = {
+	echo: async (data) => { return await ipcRenderer.invoke('test', { command: 'echo', data: data }); },
+	delay: async (msg, ms) => { return await ipcRenderer.invoke('test', { command: 'delay', data: { msg: msg, ms: ms } }); }
 }
 
 function windowCommand(e, req){
@@ -963,7 +981,8 @@ let exp = {
 	ipcHandle	: ipcHandle,
 	config		: config,
 	log			:log,
-	ipcHandleRenderer: ipcHandleRenderer
+	ipcHandleRenderer: ipcHandleRenderer,
+	test		: fnc_test
 }
 
 if(context_type != 'browser'){

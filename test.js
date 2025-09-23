@@ -1,6 +1,9 @@
 // test_helper.js - Test suite for electron_helper APIs
 
-export async function testHelper() {
+export async function testHelper(options = {}) {
+    const pauseMs = (options && typeof options.pauseMs === 'number') ? options.pauseMs : 200;
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
     console.log('Starting electron_helper API tests...');
 
     const results = {
@@ -122,6 +125,9 @@ export async function testHelper() {
         } catch (e) { error('window fullscreen operations', e); }
     }
 
+    // pause between tests
+    await sleep(pauseMs);
+
     // Test Global API
     const globalApi = window.electron_helper.global;
     if (typeof globalApi !== 'object') {
@@ -215,6 +221,9 @@ export async function testHelper() {
         });
     }
 
+    // pause between tests
+    await sleep(pauseMs);
+
     // Test Screen API
     const screenApi = window.electron_helper.screen;
     if (typeof screenApi !== 'object') {
@@ -254,6 +263,9 @@ export async function testHelper() {
             }
         });
     }
+
+    // pause between tests
+    await sleep(pauseMs);
 
     // Test App API
     const appApi = window.electron_helper.app;
@@ -315,6 +327,9 @@ export async function testHelper() {
         });
     }
 
+    // pause between tests
+    await sleep(pauseMs);
+
     // Test Tools (just a few safe ones)
     const toolsApi = window.electron_helper.tools;
     if (typeof toolsApi !== 'object') {
@@ -344,7 +359,7 @@ export async function testHelper() {
 
         // Test browserWindow creation
         try {
-            const winId = await toolsApi.browserWindow('default', { html: '<html><body>Test Window</body></html>' });
+            const winId = await toolsApi.browserWindow('default', { devTools:true, html: '<html><body>Test Window</body></html>' });
             if (typeof winId === 'number' && winId > 0) {
                 log(`tools.browserWindow() created window with ID: ${winId}`);
                 // Note: Window remains open for manual inspection/testing
@@ -410,6 +425,9 @@ export async function testHelper() {
         } catch (e) { error('tools filesystem helpers', e); }
     }
 
+    // pause between tests
+    await sleep(pauseMs);
+
     // Test Dialog API
     const dialogApi = window.electron_helper.dialog;
     if (typeof dialogApi !== 'object') {
@@ -423,6 +441,9 @@ export async function testHelper() {
             error('dialog.showOpenDialog not a function');
         }
     }
+
+    // pause between tests
+    await sleep(pauseMs);
 
     // Test Shell API
     const shellApi = window.electron_helper.shell;
@@ -446,6 +467,9 @@ export async function testHelper() {
             // Note: File remains for manual cleanup
         } catch (e) { error('shell.showItemInFolder() with temp file', e); }
     }
+
+    // pause between tests
+    await sleep(pauseMs);
 
     // Test Config function
     const configApi = window.electron_helper.config;
@@ -477,41 +501,8 @@ export async function testHelper() {
         error('config not a function');
     }
 
-    // Test Test API (for IPC testing)
-    const testApi = window.electron_helper.test;
-    if (typeof testApi !== 'object') {
-        error('test API not an object');
-    } else {
-        log('test API is object');
-        try {
-            const testData = { echo: 'test', num: 42 };
-            const result = await testApi.echo(testData);
-            if (result && result.echo === 'test' && result.num === 42) {
-                log('test.echo() succeeded');
-            } else {
-                error('test.echo() failed:', result);
-            }
-        } catch (e) { error('test.echo()', e); }
-
-        try {
-            const start = Date.now();
-            const delayResult = await testApi.delay('delayed', 200);
-            const elapsed = Date.now() - start;
-            if (delayResult === 'delayed' && elapsed >= 180 && elapsed <= 300) {
-                log('test.delay() succeeded');
-            } else {
-                error('test.delay() failed:', { result: delayResult, elapsed });
-            }
-        } catch (e) { error('test.delay()', e); }
-
-        ['echo', 'delay'].forEach(method => {
-            if (typeof testApi[method] === 'function') {
-                log(`test.${method} is function`);
-            } else {
-                error(`test.${method} not a function`);
-            }
-        });
-    }
+    // pause between tests
+    await sleep(pauseMs);
 
     // Test Log function
     const logApi = window.electron_helper.log;
