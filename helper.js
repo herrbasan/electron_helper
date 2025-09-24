@@ -758,10 +758,15 @@ tools.drawImageDummy = (text="Missing Asset", width=1920, height=1080) => {
 	return img;
 }
 
-tools.versionInfo = (_target) => {
+tools.versionInfo = (_target, opts) => {
+	// opts:
+	//   returnElement: true -> return the rendered HTMLElement without appending or applying display logic
+	//   returnString: true -> return the HTML string (unparsed)
+	const returnElement = opts && opts.returnElement;
+	const returnString = opts && opts.returnString;
 	let target = _target ? _target : document.body;
 	let info = process.versions;
-	let ss = tools.headCSS( /*css*/ `
+	const cssText = /*css*/ `
 		.helper-versions {
 			position: absolute; 
 			bottom: 20px; 
@@ -791,11 +796,14 @@ tools.versionInfo = (_target) => {
 			padding-right: 10px;
 			opacity: 0.5;
 		}
-	`);
+	`;
 
-
+	// Inline the CSS into the returned HTML so callers don't need to inject via headCSS
 	let html = /*html*/ `
 		<div class="helper-versions">
+			<style>
+			${cssText}
+			</style>
 			<div class="item">
 				<div>Node:</div>
 				<div>${info.node}</div>
@@ -809,13 +817,21 @@ tools.versionInfo = (_target) => {
 				<div>${info.chrome}</div>
 			</div>
 		</div>
-	`
+	`;
+	if(returnString){
+		return html;
+	}
+
 	let fragment = document.createRange().createContextualFragment(html).firstElementChild;
+
+	if(returnElement){
+		return fragment;
+	}
+
 	target.appendChild(fragment);
 	setTimeout(() => {
 		let __el = document.querySelector('.helper-versions');
-		__el.parentNode.removeChild(__el)
-		document.getElementsByTagName("head")[0].removeChild(ss);
+		if(__el && __el.parentNode){ __el.parentNode.removeChild(__el); }
 	},5000)
 }
 
