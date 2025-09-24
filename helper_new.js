@@ -451,6 +451,16 @@ function initApis() {
 
 function config(fp, obj, force){
 	return new Promise(async (resolve, reject) => {
+		if(fp === 'memory'){
+			let cnf = {};
+			cnf.data = obj;
+			cnf.backup = JSON.stringify(obj);
+			cnf.writeFile = () => {}; // no-op for in-memory
+			cnf.write = () => {}; // no-op
+			// no interval set for in-memory
+			resolve(cnf);
+			return;
+		}
 		let up;
 		if(context_type == 'browser'){ up = app.getPath('userData') }
 		else { up = await fnc_app.getPath('userData'); }

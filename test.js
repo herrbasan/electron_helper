@@ -422,6 +422,10 @@ export async function testHelper(options = {}) {
             if (!Array.isArray(filesAll) || filesAll.length < 2) throw new Error('getFilesRecursive did not return nested files');
 
             log('tools.readJSON/writeJSON/fileExists/getFiles getFilesRecursive succeeded');
+            // Cleanup
+            try {
+                await toolsApi.fs.rmdir(testDir, { recursive: true });
+            } catch (e) { /* ignore cleanup errors */ }
         } catch (e) { error('tools filesystem helpers', e); }
     }
 
@@ -457,15 +461,12 @@ export async function testHelper(options = {}) {
             error('shell.showItemInFolder not a function');
         }
 
-        // Test showItemInFolder with a temp file
+        // Test showItemInFolder with a known Windows file (no creation/cleanup needed)
         try {
-            const tempDir = await appApi.getPath('temp');
-            const tempFile = toolsApi.path.join(tempDir, `test_${toolsApi.id()}.txt`);
-            await toolsApi.fs.writeFile(tempFile, 'Test file for shell.showItemInFolder');
-            await shellApi.showItemInFolder(tempFile);
-            log('shell.showItemInFolder() opened temp file in folder');
-            // Note: File remains for manual cleanup
-        } catch (e) { error('shell.showItemInFolder() with temp file', e); }
+            const knownFile = 'C:\\Windows\\System32\\cmd.exe'; // Always present on Windows
+            await shellApi.showItemInFolder(knownFile);
+            log('shell.showItemInFolder() opened known file in folder');
+        } catch (e) { error('shell.showItemInFolder() with known file', e); }
     }
 
     // pause between tests
@@ -496,6 +497,10 @@ export async function testHelper(options = {}) {
             } else {
                 error('config() real file creation failed:', realConfig);
             }
+            // Cleanup
+            try {
+                await toolsApi.fs.unlink(configFile);
+            } catch (e) { /* ignore cleanup errors */ }
         } catch (e) { error('config() real file creation', e); }
     } else {
         error('config not a function');
