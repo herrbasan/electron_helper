@@ -449,84 +449,149 @@ function initApis() {
     }
 }
 
-function config(fp, obj, force){
-	return new Promise(async (resolve, reject) => {
-		if(fp === 'memory'){
-			let cnf = {};
-			cnf.data = obj;
-			cnf.backup = JSON.stringify(obj);
-			cnf.writeFile = () => {}; // no-op for in-memory
-			cnf.write = () => {}; // no-op
-			// no interval set for in-memory
-			resolve(cnf);
-			return;
-		}
-		let up;
-		if(context_type == 'browser'){ up = app.getPath('userData') }
-		else { up = await fnc_app.getPath('userData'); }
+let masterConfigs = {};
 
-		let cnf = {};
-		cnf.data = obj;
-		cnf.backup = JSON.stringify(obj);
+// This is the core file-handling logic, adapted from the old `config` function.
+async function _loadAndWatchConfigFile(filePath, defaultConfig, force) {
+    return new Promise(async (resolve, reject) => {
+        let cnf = {};
+        cnf.data = defaultConfig;
+        cnf.backup = JSON.stringify(defaultConfig);
+        cnf.path = filePath;
+        const backupPath = filePath + '.bak';
 
-		if(fp === 'user'){ fp = path.join(up, 'config.json'); }
-		cnf.path = fp;
-		const backupPath = fp + '.bak';
+        if (force) {
+            await fs.unlink(filePath).catch(() => {});
+            await fs.unlink(backupPath).catch(() => {});
+        }
 
-		if(force){ await fs.unlink(fp).catch(() => {}); await fs.unlink(backupPath).catch(() => {}); }
+        cnf.writeFile = async () => {
+            const currentStr = JSON.stringify(cnf.data, null, 4);
+            if (currentStr !== cnf.backup) {
+                fb(`Writing Config: ${path.basename(filePath)}`);
+                try {
+                    if (await tools.fileExists(filePath)) {
+                        const existing = await tools.readJSON(filePath);
+                        if (JSON.stringify(existing) !== currentStr) {
+                            await tools.writeJSON(backupPath, existing);
+                        }
+                    }
+                } catch (e) {
+                    fb(`Failed to create config backup: ${e.message}`);
+                }
+                cnf.backup = currentStr;
+                return tools.writeJSON(cnf.path, cnf.data);
+            }
+        };
 
-		cnf.writeFile = async () => { 
-			const currentStr = JSON.stringify(cnf.data);
-			if(currentStr != cnf.backup){
-				fb('Writing Config')
-				try {
-					if(await tools.fileExists(fp)){
-						const existing = await tools.readJSON(fp);
-						if(JSON.stringify(existing) !== currentStr){
-							await tools.writeJSON(backupPath, existing);
-							fb('Config backup created');
-						}
-					}
-				} catch (e) { fb('Failed to create config backup: ' + e.message); }
-				cnf.backup = currentStr;
-				return tools.writeJSON(cnf.path, cnf.data);
-			}
-		};
+        cnf.write = () => {
+            clearTimeout(cnf.timeout);
+            cnf.timeout = setTimeout(cnf.writeFile, 500);
+        };
+        cnf.interval = setInterval(cnf.write, 3000);
 
-		cnf.write = () => {
-			clearTimeout(cnf.timeout);
-			cnf.timeout = setTimeout(cnf.writeFile, 500)
-		}
-		cnf.interval = setInterval(cnf.write, 3000);
-
-		if(!(await tools.fileExists(fp))){
-			await tools.writeJSON(fp, cnf.data);
-			resolve( cnf );
-		}
-		else {
-			let loadedData = null;
-			try {
-				loadedData = await tools.readJSON(fp);
-				if(!loadedData || (typeof loadedData === 'object' && Object.keys(loadedData).length === 0)){
-					throw new Error('Config file is empty');
-				}
-				JSON.stringify(loadedData);
-			} catch (e) {
-				fb('Config file corrupted or empty, attempting restore from backup: ' + e.message);
-				try {
-					loadedData = await tools.readJSON(backupPath);
-					await tools.writeJSON(fp, loadedData);
-					fb('Config restored from backup');
-				} catch (backupErr) {
-					fb('Backup restore failed: ' + backupErr.message + ', using default config');
-					loadedData = obj; // fallback to provided obj
-				}
-			}
-			cnf.data = loadedData;
-			resolve( cnf );
-		}
-	})
+        if (!(await tools.fileExists(filePath))) {
+            await tools.writeJSON(filePath, cnf.data);
+            resolve(cnf);
+        } else {
+            let loadedData = null;
+            try {
+                loadedData = await tools.readJSON(filePath);
+                if (!loadedData || (typeof loadedData === 'object' && Object.keys(loadedData).length === 0)) {
+                    throw new Error('Config file is empty');
+                }
+                JSON.stringify(loadedData); // Validate it's not circular
+            } catch (e) {
+                fb(`Config file corrupted, attempting restore from backup: ${e.message}`);
+                try {
+                    loadedData = await tools.readJSON(backupPath);
+                    await tools.writeJSON(filePath, loadedData);
+                    fb('Config restored from backup');
+                } catch (backupErr) {
+                    fb(`Backup restore failed: ${backupErr.message}, using default config`);
+                    loadedData = defaultConfig;
+                }
+            }
+            cnf.data = loadedData;
+            resolve(cnf);
+        }
+    });
 }
+
+
+const config = {
+    initMain: async (name, defaultConfig = {}) => {
+        if (context_type !== 'browser') {
+            throw new Error('helper.config.initMain can only be called from the main process.');
+        }
+
+        const userPath = app.getPath('userData');
+        const filePath = path.join(userPath, `${name}.json`);
+        
+        const configObj = await _loadAndWatchConfigFile(filePath, defaultConfig);
+        masterConfigs[name] = configObj;
+
+        // Ensure IPC handlers are only set up once.
+        if (!ipcMain.eventNames().includes('config-get')) {
+            fb('Setting up centralized config IPC handlers.');
+            
+            ipcMain.handle('config-get', (e, configName) => {
+                if (!masterConfigs[configName]) {
+                    console.error(`Config '${configName}' not initialized in main process.`);
+                    return null;
+                }
+                return masterConfigs[configName].data;
+            });
+
+            ipcMain.handle('config-set', (e, { name, data }) => {
+                if (masterConfigs[name]) {
+                    masterConfigs[name].data = data;
+                    masterConfigs[name].write(); // This is the debounced save-to-file method.
+                    
+                    // Broadcast the update to all renderer processes.
+                    tools.broadcast(`config-updated-${name}`, data);
+                    
+                    return { success: true };
+                }
+                return { success: false, error: `Config '${name}' not found.` };
+            });
+        }
+        
+        // Return a subset of the config object for direct use in main process if needed.
+        return {
+            get: () => masterConfigs[name].data,
+            set: (newData) => {
+                masterConfigs[name].data = newData;
+                masterConfigs[name].write();
+                tools.broadcast(`config-updated-${name}`, newData);
+            },
+            path: masterConfigs[name].path
+        };
+    },
+
+    initRenderer: async (name, updateCallback) => {
+        if (context_type === 'browser') {
+            throw new Error('helper.config.initRenderer can only be called from a renderer process.');
+        }
+
+        let localConfig = await ipcRenderer.invoke('config-get', name);
+
+        ipcRenderer.on(`config-updated-${name}`, (e, newData) => {
+            localConfig = newData;
+            if (updateCallback && typeof updateCallback === 'function') {
+                updateCallback(newData);
+            }
+        });
+
+        return {
+            get: () => localConfig,
+            set: (newData) => {
+                localConfig = newData; // Optimistic update of local copy
+                ipcRenderer.invoke('config-set', { name: name, data: newData });
+            }
+        };
+    }
+};
 
 
 async function toolsCommand(e, req){
@@ -967,7 +1032,6 @@ tools.versionInfo = (_target, opts) => {
 	setTimeout(() => {
 		let __el = document.querySelector('.helper-versions');
 		if(__el && __el.parentNode){ __el.parentNode.removeChild(__el); }
-		if(ss && ss.parentNode){ ss.parentNode.removeChild(ss); }
 	},5000)
 }
 
