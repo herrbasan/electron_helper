@@ -1132,7 +1132,7 @@ tools.subWindow = function(html, options){
 
 tools.isAdmin = function(){
 	return new Promise((resolve, reject) => {
-		child_process.exec('NET SESSION', function(err,so,se) {
+		child_process.exec('NET SESSION', { windowsHide: true }, function(err,so,se) {
 			resolve(se.length === 0 ? true : false);
     	});
 	})
