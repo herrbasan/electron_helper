@@ -25,6 +25,20 @@ function fetchWithTimeout(url, options = {}, timeout = UPDATE_CHECK_TIMEOUT) {
 	]);
 }
 
+// Proper semantic version comparison
+// Returns true if remote is newer than local
+function isNewerVersion(remote, local) {
+	const r = remote.split('.').map(Number);
+	const l = local.split('.').map(Number);
+	for (let i = 0; i < Math.max(r.length, l.length); i++) {
+		const rv = r[i] || 0;
+		const lv = l[i] || 0;
+		if (rv > lv) return true;
+		if (rv < lv) return false;
+	}
+	return false;
+}
+
 function init(prop){
 	return new Promise(async (resolve, reject) => {
 		current = {};
@@ -208,7 +222,7 @@ function checkVersion(url, source = 'http'){
 			let response = await fetchWithTimeout(url + 'RELEASES')
 			let version_file = await response.text();
 			remote_version = version_file.split(' ')[1].split('-')[1];
-			if(parseInt(remote_version.split('.').join('')) > parseInt(app.getVersion().split('.').join(''))){
+			if(isNewerVersion(remote_version, app.getVersion())){
 				isNew = true;
 				await tools.ensureDir(temp_dir);
 				await fs.writeFile(path.join(temp_dir, 'RELEASES'), version_file);
@@ -260,7 +274,7 @@ function checkVersionGit(repo){
 			remote_version = release.tag_name.replace('v', '');
 			
 			// Check if remote version is newer
-			if(parseInt(remote_version.split('.').join('')) > parseInt(app.getVersion().split('.').join(''))){
+			if(isNewerVersion(remote_version, app.getVersion())){
 				isNew = true;
 				await tools.ensureDir(temp_dir);
 				
