@@ -106,11 +106,14 @@ function init(prop){
 				emit('state', 1);
 
 				emit('log','Init Updater Events');
+				// Remove any existing listeners before adding new ones (for repeated checks)
+				autoUpdater.removeAllListeners();
 				autoUpdater.on('error', (e) => { emit('autoupdater', e.toString()); updateAborted(-4);})
 				autoUpdater.on('checking-for-update', () => { emit('autoupdater', 'checking-for-update')} )
 				autoUpdater.on('update-available', () => { emit('autoupdater', 'update-available')} )
 				autoUpdater.on('update-not-available', () => { emit('autoupdater', 'update-not-available')} )
 				autoUpdater.on('update-downloaded', () => { emit('autoupdater', 'update-not-available'); updateFinished()})
+				ipcMain.removeListener('command', command); // Remove existing before adding
 				ipcMain.on('command', command);
 				
 				// For silent/widget modes, start update immediately and resolve true
@@ -201,6 +204,89 @@ function emit(type, data){
 	}
 	if(progress){
 		progress({type, data});
+	}
+}
+
+// Manual update check with UI - shows window immediately with checking state
+async function checkWithUI(repo, progressCallback) {
+	progress = progressCallback;
+	
+	// Create and show window immediately
+	control = await tools.browserWindow('default', {frame:false, devTools:false, show:true, html:renderWindow('splash')});
+	control.show();
+	
+	// Prevent app quit when this window closes
+	preventQuitHandler = (e) => { e.preventDefault(); };
+	app.on('window-all-closed', preventQuitHandler);
+	
+	// Show checking state
+	emit('version', {name: app.getName(), version: app.getVersion()});
+	emit('state', 0); // Checking state
+	emit('log', 'Checking for updates...');
+	
+	// Set up command handler for close button
+	ipcMain.removeListener('command', commandCheckUI);
+	ipcMain.on('command', commandCheckUI);
+	
+	try {
+		let check = await checkVersionGit(repo);
+		
+		if (!check.status) {
+			emit('log', 'Update check failed');
+			emit('state', -5); // Error state
+			return { status: false, error: check.remote_version };
+		}
+		
+		if (check.isNew) {
+			emit('log', 'Update available: v' + check.remote_version);
+			emit('version', {name: app.getName(), version: app.getVersion(), remote_version: check.remote_version});
+			emit('state', 1); // Update available state
+			
+			// Store check result for when user clicks Update
+			current.check = check;
+			current.package_url = check.nupkg_url;
+			current.package_checksum = check.version[0];
+			current.package_name = check.version[1];
+			current.package_size = check.version[2];
+			
+			// Set up autoUpdater listeners
+			autoUpdater.removeAllListeners();
+			autoUpdater.on('error', (e) => { emit('autoupdater', e.toString()); updateAborted(-4);})
+			autoUpdater.on('checking-for-update', () => { emit('autoupdater', 'checking-for-update')} )
+			autoUpdater.on('update-available', () => { emit('autoupdater', 'update-available')} )
+			autoUpdater.on('update-not-available', () => { emit('autoupdater', 'update-not-available')} )
+			autoUpdater.on('update-downloaded', () => { emit('autoupdater', 'update-downloaded'); updateFinished()})
+			
+			return { status: true, isNew: true, version: check.remote_version };
+		}
+		else {
+			emit('log', 'No updates available');
+			emit('state', -6); // Up to date state
+			return { status: true, isNew: false };
+		}
+	}
+	catch (err) {
+		emit('log', 'Error: ' + err.message);
+		emit('state', -5); // Error state
+		return { status: false, error: err.message };
+	}
+}
+
+function commandCheckUI(e, data) {
+	if (data == 'app_exit') {
+		closeCheckUI();
+	}
+	if (data == 'run_update') {
+		runUpdate();
+	}
+}
+
+function closeCheckUI() {
+	ipcMain.removeListener('command', commandCheckUI);
+	if (control) { control.destroy(); control = null; }
+	if (preventQuitHandler) {
+		app.removeListener('window-all-closed', preventQuitHandler);
+		preventQuitHandler = null;
 	}
 }
 
@@ -1199,26 +1285,53 @@ function renderWindow(type){
 			function renderSplash(data){
 				el('.splash .info h1').innerHTML = data.name;
 				el('.splash .info .version').innerHTML = data.version;
-				el('.steps .remote_version').innerHTML = 'Version ' + data.remote_version + ' is available';
+				if(data.remote_version) {
+					el('.steps .remote_version').innerHTML = 'Version ' + data.remote_version + ' is available';
+				}
 				if(data.company) {
 					el('.splash .info .company').innerHTML = data.company;
 				}
 			}
 
 			function changeState(data){
-
+				// State 0: Checking for updates
+				if(data == 0){
+					el('.nui-title-bar').style.opacity = 1;
+					el('.nui-status-bar').style.opacity = 1;
+					el('.steps').style.transform = 'scaleY(1)';
+					el('.steps .remote_version').innerHTML = 'Checking for updates...';
+					el('#btn_install').style.display = 'none';
+					el('#btn_abort').textContent = 'Cancel';
+				}
+				// State 1: Update available
 				if(data == 1){
 					el('.nui-title-bar').style.opacity = 1;
 					el('.nui-status-bar').style.opacity = 1;
 					el('.steps').style.transform = 'scaleY(1)';
+					el('#btn_install').style.display = '';
+					el('#btn_abort').textContent = 'Ignore';
 				}
+				// State 2: Downloading
 				if(data == 2){
 					g.prog_status_left.innerHTML = 'Downloading update file';
 					el('.steps .wrap').style.left = '-100%';
 				}
+				// State 3: Preparing
 				if(data == 3){
 					g.prog_status_left.innerHTML = 'Preparing update';
 					el('.steps .wrap').style.left = '-100%';
+				}
+				// State -5: Error
+				if(data == -5){
+					el('.steps .remote_version').innerHTML = 'Failed to check for updates';
+					el('#btn_install').style.display = 'none';
+					el('#btn_abort').textContent = 'Close';
+				}
+				// State -6: Up to date
+				if(data == -6){
+					el('.steps .remote_version').innerHTML = 'You have the latest version';
+					el('#btn_install').style.display = 'none';
+					el('#btn_abort').textContent = 'Close';
 				}
 			}
 
@@ -1239,3 +1352,4 @@ function renderWindow(type){
 
 module.exports.init = init;
 module.exports.checkVersion = checkVersion;
+module.exports.checkWithUI = checkWithUI;
