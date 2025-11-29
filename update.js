@@ -11,21 +11,18 @@ let current = {}
 let control;
 let temp_dir = path.join(app.getPath('temp'), app.getName() + '_update');
 let progress;
+let initResolver = null; // Store resolver to call when user makes a decision
+let preventQuitHandler = null; // Handler to prevent app quit when update window closes
 
 function init(prop){
 	return new Promise(async (resolve, reject) => {
 		current = {};
 		progress = prop.progress;
+		initResolver = null;
 
-		if(prop.mode == 'splash'){
-			control = await tools.browserWindow('default', {frame:false, devTools:false, show:true, html:renderWindow(prop.mode)})
-		}
-		if(prop.mode == 'widget'){
-			control = await tools.browserWindow('default', {focusable:false, closeable:false, backgroundColor:null, transparent:true, frame:false, width:450, height:140, devTools:false, show:true, html:renderWindow(prop.mode)})
-			let display = screen.getPrimaryDisplay();
-			control.setPosition((display.bounds.width/2) - 225, 200);
-			control.setAlwaysOnTop(true, 'screen');
-		}
+		// Delay window creation until we know if there's an update
+		let windowCreated = false;
+		
 		emit('version', {name:app.getName(), version:app.getVersion()})
 		await awaitMs(prop.start_delay || 1000);
 	
@@ -35,20 +32,49 @@ function init(prop){
 				check = prop.check;
 			}
 			else {
-				check = await checkVersion(prop.url);
+				// Support different update sources
+				check = await checkVersion(prop.url, prop.source || 'http');
 			}
 
 			if(!check.status){
-				emit('log', 'Failed to fetch URL: ' + prop.url);
+				let sourceType = prop.source === 'git' ? 'GitHub repository' : 'URL';
+				emit('log', `Failed to fetch ${sourceType}: ${prop.url}`);
 				updateAborted(-2);
 				resolve(false);
 			}
 			else if(check.isNew){
+				// Prevent app from quitting when update window is closed
+				preventQuitHandler = (e) => { e.preventDefault(); };
+				app.on('window-all-closed', preventQuitHandler);
+				
+				// Only create window when update is found
+				if(prop.mode == 'splash'){
+					control = await tools.browserWindow('default', {frame:false, devTools:false, show:true, html:renderWindow(prop.mode)})
+					windowCreated = true;
+				}
+				if(prop.mode == 'widget'){
+					control = await tools.browserWindow('default', {focusable:false, closeable:false, backgroundColor:null, transparent:true, frame:false, width:450, height:140, devTools:false, show:true, html:renderWindow(prop.mode)})
+					let display = screen.getPrimaryDisplay();
+					control.setPosition((display.bounds.width/2) - 225, 200);
+					control.setAlwaysOnTop(true, 'screen');
+					windowCreated = true;
+				}
+				
 				if(control) { control.show();}
 				current.package_checksum = check.version[0];
 				current.package_name = check.version[1];
 				current.package_size = check.version[2];
-				current.package_url = prop.url + check.version[1];
+				
+				// Construct download URL based on source
+				if(prop.source === 'git') {
+					// For GitHub, use the nupkg URL from the API response
+					current.package_url = check.nupkg_url;
+				}
+				else {
+					// Default HTTP mode
+					current.package_url = prop.url + check.version[1];
+				}
+				
 				emit('log','New Version Found');
 				emit('log', current);
 				emit('version', {name:app.getName(), version:app.getVersion(), remote_version:check.remote_version})
@@ -61,8 +87,17 @@ function init(prop){
 				autoUpdater.on('update-not-available', () => { emit('autoupdater', 'update-not-available')} )
 				autoUpdater.on('update-downloaded', () => { emit('autoupdater', 'update-not-available'); updateFinished()})
 				ipcMain.on('command', command);
-				if(prop.mode == 'silent' || prop.mode == 'widget') { runUpdate(); };
-				resolve(true);
+				
+				// For silent/widget modes, start update immediately and resolve true
+				if(prop.mode == 'silent' || prop.mode == 'widget') { 
+					runUpdate(); 
+					resolve(true);
+				}
+				else {
+					// For splash mode, wait for user decision before resolving
+					// Store resolver to be called by command handler
+					initResolver = resolve;
+				}
 			}
 			else {
 				updateAborted(-1);
@@ -80,9 +115,19 @@ function init(prop){
 
 function command(e, data){
 	if(data == 'app_exit'){
+		// User clicked Ignore or closed window - resolve with false to continue app startup
+		if(initResolver) {
+			initResolver(false);
+			initResolver = null;
+		}
 		updateAborted(-10);
 	}
 	if(data == 'run_update'){
+		// User clicked Update - resolve with true to indicate update in progress
+		if(initResolver) {
+			initResolver(true);
+			initResolver = null;
+		}
 		runUpdate();
 	}
 }
@@ -96,7 +141,19 @@ async function updateFinished(e){
 async function updateAborted(state){
 	emit('log', 'Update Aborted');
 	emit('state', state);
-	if(control) { control.close(); control = null; }
+	
+	// Remove command listener to prevent duplicate handlers on next update check
+	ipcMain.removeListener('command', command);
+	
+	// Destroy window first, then remove the prevent-quit handler
+	// This order matters: if we remove handler first, closing the window triggers app quit
+	if(control) { control.destroy(); control = null; }
+	
+	// Now remove the prevent-quit handler so app can continue normally
+	if(preventQuitHandler) {
+		app.removeListener('window-all-closed', preventQuitHandler);
+		preventQuitHandler = null;
+	}
 }
 
 
@@ -124,8 +181,13 @@ function emit(type, data){
 
 
 
-function checkVersion(url){
-	emit('log','Check Version');
+function checkVersion(url, source = 'http'){
+	if(source === 'git') {
+		return checkVersionGit(url);
+	}
+	
+	// Default HTTP mode
+	emit('log','Check Version (HTTP)');
 	return new Promise( async (resolve, reject) => {
 		let status = false;
 		let isNew = false;
@@ -148,6 +210,83 @@ function checkVersion(url){
 			remote_version = err.toString();
 		}
 		resolve({status:status, isNew:isNew, remote_version:remote_version, version:version});
+	})
+}
+
+function checkVersionGit(repo){
+	emit('log','Check Version (GitHub)');
+	return new Promise( async (resolve, reject) => {
+		let status = false;
+		let isNew = false;
+		let version;
+		let remote_version;
+		let nupkg_url;
+		try {
+			// Fetch latest release info from GitHub API
+			// Try latest endpoint first, fallback to releases list if it fails
+			let apiUrl = `https://api.github.com/repos/${repo}/releases/latest`;
+			let response = await fetch(apiUrl);
+			
+			let release;
+			if(response.status === 404) {
+				// Fallback: get all releases and take the first one
+				emit('log','Latest endpoint failed, trying releases list');
+				apiUrl = `https://api.github.com/repos/${repo}/releases`;
+				response = await fetch(apiUrl);
+				let releases = await response.json();
+				if(!releases || releases.length === 0) {
+					throw new Error('No releases found');
+				}
+				release = releases[0]; // First release should be latest
+			} else {
+				release = await response.json();
+			}
+			
+			if(!release || !release.tag_name) {
+				throw new Error('Invalid GitHub release data');
+			}
+			
+			remote_version = release.tag_name.replace('v', '');
+			
+			// Check if remote version is newer
+			if(parseInt(remote_version.split('.').join('')) > parseInt(app.getVersion().split('.').join(''))){
+				isNew = true;
+				await tools.ensureDir(temp_dir);
+				
+				// Find RELEASES file in assets
+				let releasesAsset = release.assets.find(asset => asset.name === 'RELEASES');
+				let nupkgAsset = release.assets.find(asset => asset.name.endsWith('-full.nupkg'));
+				
+				if(!releasesAsset || !nupkgAsset) {
+					throw new Error('Required assets (RELEASES, nupkg) not found in GitHub release');
+				}
+				
+				// Download RELEASES file
+				let releasesResponse = await fetch(releasesAsset.browser_download_url);
+				let version_file = await releasesResponse.text();
+				
+				await fs.writeFile(path.join(temp_dir, 'RELEASES'), version_file);
+				
+				// Parse version data from RELEASES file
+				let version_parts = version_file.trim().split(' ');
+				version = [
+					version_parts[0], // checksum
+					nupkgAsset.name, // filename 
+					version_parts[2]  // size
+				];
+				
+				nupkg_url = nupkgAsset.browser_download_url;
+				status = true;
+			}
+			else {
+				status = true;
+			}
+		}
+		catch(err) {
+			console.log('GitHub check error:', err.toString())
+			remote_version = err.toString();
+		}
+		resolve({status:status, isNew:isNew, remote_version:remote_version, version:version, nupkg_url:nupkg_url});
 	})
 }
 

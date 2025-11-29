@@ -701,7 +701,9 @@ tools.sendToMain = (channel, data) => {
 tools.sendToId = async (id, channel, data) => {
 	if(context_type == 'browser'){
 		let win = BrowserWindow.fromId(id);
-		win.webContents.send(channel, data);
+		if(win && !win.isDestroyed()) {
+			win.webContents.send(channel, data);
+		}
 	}
 	else {
 		await ipcRenderer.invoke('tools', {command:'sendToId', data:{id:id, channel:channel, data:data}});
