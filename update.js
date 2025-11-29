@@ -5,6 +5,7 @@ const _fs = require('fs');
 const fs = _fs.promises;
 const https = require('https');
 
+const UPDATE_CHECK_TIMEOUT = 5000; // 5 second timeout for update checks
 
 let tools = {};
 let current = {}
@@ -13,6 +14,16 @@ let temp_dir = path.join(app.getPath('temp'), app.getName() + '_update');
 let progress;
 let initResolver = null; // Store resolver to call when user makes a decision
 let preventQuitHandler = null; // Handler to prevent app quit when update window closes
+
+// Fetch with timeout wrapper
+function fetchWithTimeout(url, options = {}, timeout = UPDATE_CHECK_TIMEOUT) {
+	return Promise.race([
+		fetch(url, options),
+		new Promise((_, reject) => 
+			setTimeout(() => reject(new Error(`Request timeout after ${timeout}ms`)), timeout)
+		)
+	]);
+}
 
 function init(prop){
 	return new Promise(async (resolve, reject) => {
@@ -194,7 +205,7 @@ function checkVersion(url, source = 'http'){
 		let version;
 		let remote_version;
 		try {
-			let response = await fetch(url + 'RELEASES')
+			let response = await fetchWithTimeout(url + 'RELEASES')
 			let version_file = await response.text();
 			remote_version = version_file.split(' ')[1].split('-')[1];
 			if(parseInt(remote_version.split('.').join('')) > parseInt(app.getVersion().split('.').join(''))){
@@ -225,14 +236,14 @@ function checkVersionGit(repo){
 			// Fetch latest release info from GitHub API
 			// Try latest endpoint first, fallback to releases list if it fails
 			let apiUrl = `https://api.github.com/repos/${repo}/releases/latest`;
-			let response = await fetch(apiUrl);
+			let response = await fetchWithTimeout(apiUrl);
 			
 			let release;
 			if(response.status === 404) {
 				// Fallback: get all releases and take the first one
 				emit('log','Latest endpoint failed, trying releases list');
 				apiUrl = `https://api.github.com/repos/${repo}/releases`;
-				response = await fetch(apiUrl);
+				response = await fetchWithTimeout(apiUrl);
 				let releases = await response.json();
 				if(!releases || releases.length === 0) {
 					throw new Error('No releases found');
@@ -262,7 +273,7 @@ function checkVersionGit(repo){
 				}
 				
 				// Download RELEASES file
-				let releasesResponse = await fetch(releasesAsset.browser_download_url);
+				let releasesResponse = await fetchWithTimeout(releasesAsset.browser_download_url);
 				let version_file = await releasesResponse.text();
 				
 				await fs.writeFile(path.join(temp_dir, 'RELEASES'), version_file);
