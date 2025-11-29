@@ -410,47 +410,71 @@ function awaitMs(ms){
 }
 
 
-tools.download = async (url, file, progress) => {
+tools.download = async (url, file, progress, maxRedirects = 5) => {
     return new Promise(async (resolve, reject) => {
-        https.get(url, async (res) => {
-            if(res.statusCode == 200){
-                let temp_file = path.join(path.dirname(file), tools.id())
-                await fs.writeFile(temp_file, '');
-                let bytes = 0;
-                let stream = _fs.createWriteStream(temp_file);
-                let totalbytes = res.headers['content-length'];
-                let startTime = 0;
-                let lastBytes = 0;
-                let bps = 0;
-                res.on('data', data => {
-                    stream.write(data);
-                    let length = Buffer.byteLength(data);
-                    bytes += length;
-                    let time = (Date.now() - startTime);
-					let scale = 0.5;
-                    if(time > (1000 * scale)){
-                        startTime += time;
-                        bps = (bytes - lastBytes);
-                        lastBytes = bytes;
+        const doRequest = (requestUrl, redirectCount) => {
+            if (redirectCount > maxRedirects) {
+                resolve({status: false, msg: 'Too many redirects'});
+                return;
+            }
+            
+            https.get(requestUrl, async (res) => {
+                // Handle redirects (301, 302, 303, 307, 308)
+                if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                    let redirectUrl = res.headers.location;
+                    // Handle relative redirects
+                    if (!redirectUrl.startsWith('http')) {
+                        const urlObj = new URL(requestUrl);
+                        redirectUrl = urlObj.origin + redirectUrl;
                     }
-                    progress({bytes:bytes, totalbytes:totalbytes, bps:(bps / scale)})
-                })
+                    console.log(`Following redirect (${res.statusCode}) to: ${redirectUrl}`);
+                    doRequest(redirectUrl, redirectCount + 1);
+                    return;
+                }
                 
-                res.on('end', async () => {
-                    stream.close();
-                    await fs.rename(temp_file, file);
-                    resolve({status:true, msg:file})
-                })
+                if(res.statusCode == 200){
+                    let temp_file = path.join(path.dirname(file), tools.id())
+                    await fs.writeFile(temp_file, '');
+                    let bytes = 0;
+                    let stream = _fs.createWriteStream(temp_file);
+                    let totalbytes = res.headers['content-length'];
+                    let startTime = 0;
+                    let lastBytes = 0;
+                    let bps = 0;
+                    res.on('data', data => {
+                        stream.write(data);
+                        let length = Buffer.byteLength(data);
+                        bytes += length;
+                        let time = (Date.now() - startTime);
+                        let scale = 0.5;
+                        if(time > (1000 * scale)){
+                            startTime += time;
+                            bps = (bytes - lastBytes);
+                            lastBytes = bytes;
+                        }
+                        progress({bytes:bytes, totalbytes:totalbytes, bps:(bps / scale)})
+                    })
+                    
+                    res.on('end', async () => {
+                        stream.close();
+                        await fs.rename(temp_file, file);
+                        resolve({status:true, msg:file})
+                    })
 
-                res.on('error', async (e) => {
-                    await fs.unlink(temp_file);
-                    resolve({status:false, msg:e.toString()})
-                })
-            }
-            else {
-                resolve({status:false, msg:res.statusCode})
-            }
-        })
+                    res.on('error', async (e) => {
+                        await fs.unlink(temp_file);
+                        resolve({status:false, msg:e.toString()})
+                    })
+                }
+                else {
+                    resolve({status:false, msg: `HTTP ${res.statusCode}`})
+                }
+            }).on('error', (e) => {
+                resolve({status: false, msg: e.toString()});
+            });
+        };
+        
+        doRequest(url, 0);
     })
 }
 
