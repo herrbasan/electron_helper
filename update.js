@@ -163,6 +163,12 @@ function command(e, data){
 async function updateFinished(e){
 	emit('log', 'Quit to install');
 	emit('state', 4);
+	
+	// Force quit after a short delay if quitAndInstall doesn't close the app
+	setTimeout(() => {
+		app.exit(0);
+	}, 1000);
+	
 	autoUpdater.quitAndInstall();
 }
 
