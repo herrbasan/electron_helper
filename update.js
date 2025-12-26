@@ -28,14 +28,63 @@ function fetchWithTimeout(url, options = {}, timeout = UPDATE_CHECK_TIMEOUT) {
 // Proper semantic version comparison
 // Returns true if remote is newer than local
 function isNewerVersion(remote, local) {
-	const r = remote.split('.').map(Number);
-	const l = local.split('.').map(Number);
-	for (let i = 0; i < Math.max(r.length, l.length); i++) {
-		const rv = r[i] || 0;
-		const lv = l[i] || 0;
+	// Remove 'v' prefix if present
+	remote = remote.replace(/^v/, '');
+	local = local.replace(/^v/, '');
+
+	const parse = (v) => {
+		const [main, pre] = v.split('-');
+		const parts = main.split('.').map(n => parseInt(n, 10) || 0);
+		return { parts, pre };
+	};
+
+	const r = parse(remote);
+	const l = parse(local);
+
+	// 1. Compare Main Parts (Major.Minor.Patch)
+	for (let i = 0; i < 3; i++) {
+		const rv = r.parts[i] || 0;
+		const lv = l.parts[i] || 0;
 		if (rv > lv) return true;
 		if (rv < lv) return false;
 	}
+
+	// 2. Handling Pre-release
+	// If main parts are equal:
+	// - Release (no pre) > Pre-release (has pre)
+	if (!r.pre && l.pre) return true;  // Remote is release, Local is pre -> Update
+	if (r.pre && !l.pre) return false; // Remote is pre, Local is release -> No update
+	if (!r.pre && !l.pre) return false; // Both release and equal -> No update
+
+	// 3. Both are pre-releases: Compare pre-release identifiers
+	// e.g. "beta.1" vs "beta.2"
+	const splitPre = (s) => s.split('.').map(p => /^\d+$/.test(p) ? parseInt(p, 10) : p);
+	const rPre = splitPre(r.pre);
+	const lPre = splitPre(l.pre);
+
+	const len = Math.max(rPre.length, lPre.length);
+	for (let i = 0; i < len; i++) {
+		const rv = rPre[i];
+		const lv = lPre[i];
+
+		// A larger set of pre-release fields has a higher precedence
+		if (rv === undefined) return false; 
+		if (lv === undefined) return true;
+
+		if (rv === lv) continue;
+		
+		if (typeof rv === 'number' && typeof lv === 'number') {
+			if (rv > lv) return true;
+			if (rv < lv) return false;
+		} else {
+			// String comparison
+			const rs = String(rv);
+			const ls = String(lv);
+			if (rs > ls) return true;
+			if (rs < ls) return false;
+		}
+	}
+
 	return false;
 }
 
