@@ -512,7 +512,8 @@ async function _loadAndWatchConfigFile(filePath, defaultConfig, force) {
                     loadedData = defaultConfig;
                 }
             }
-            cnf.data = loadedData;
+            // Merge loaded data with default config to ensure new settings are present
+            cnf.data = { ...defaultConfig, ...loadedData };
             resolve(cnf);
         }
     });
