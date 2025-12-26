@@ -27,10 +27,26 @@ function fetchWithTimeout(url, options = {}, timeout = UPDATE_CHECK_TIMEOUT) {
 
 // Proper semantic version comparison
 // Returns true if remote is newer than local
-function isNewerVersion(remote, local) {
+function isNewerVersion(remote, local, useSemVer = false) {
 	// Remove 'v' prefix if present
 	remote = remote.replace(/^v/, '');
 	local = local.replace(/^v/, '');
+
+	if (!useSemVer) {
+		// Legacy simple comparison (integers split by dot)
+		// This ignores pre-release tags (e.g. -beta.1) as parseInt stops at non-numeric chars
+		const r = remote.split('.').map(n => parseInt(n, 10) || 0);
+		const l = local.split('.').map(n => parseInt(n, 10) || 0);
+		const len = Math.max(r.length, l.length);
+		
+		for (let i = 0; i < len; i++) {
+			const rv = r[i] || 0;
+			const lv = l[i] || 0;
+			if (rv > lv) return true;
+			if (rv < lv) return false;
+		}
+		return false;
+	}
 
 	const parse = (v) => {
 		const [main, pre] = v.split('-');
@@ -107,7 +123,7 @@ function init(prop){
 			}
 			else {
 				// Support different update sources
-				check = await checkVersion(prop.url, prop.source || 'http');
+				check = await checkVersion(prop.url, prop.source || 'http', prop.useSemVer);
 			}
 
 			if(!check.status){
@@ -274,7 +290,7 @@ function emit(type, data){
 }
 
 // Manual update check with UI - shows window immediately with checking state
-async function checkWithUI(repo, progressCallback) {
+async function checkWithUI(repo, progressCallback, options = {}) {
 	progress = progressCallback;
 	
 	// Create and show window immediately
@@ -295,7 +311,7 @@ async function checkWithUI(repo, progressCallback) {
 	ipcMain.on('command', commandCheckUI);
 	
 	try {
-		let check = await checkVersionGit(repo);
+		let check = await checkVersionGit(repo, options.useSemVer);
 		
 		if (!check.status) {
 			emit('log', 'Update check failed');
@@ -358,9 +374,9 @@ function closeCheckUI() {
 
 
 
-function checkVersion(url, source = 'http'){
+function checkVersion(url, source = 'http', useSemVer = false){
 	if(source === 'git') {
-		return checkVersionGit(url);
+		return checkVersionGit(url, useSemVer);
 	}
 	
 	// Default HTTP mode
@@ -374,7 +390,7 @@ function checkVersion(url, source = 'http'){
 			let response = await fetchWithTimeout(url + 'RELEASES')
 			let version_file = await response.text();
 			remote_version = version_file.split(' ')[1].split('-')[1];
-			if(isNewerVersion(remote_version, app.getVersion())){
+			if(isNewerVersion(remote_version, app.getVersion(), useSemVer)){
 				isNew = true;
 				await tools.ensureDir(temp_dir);
 				await fs.writeFile(path.join(temp_dir, 'RELEASES'), version_file);
@@ -390,7 +406,7 @@ function checkVersion(url, source = 'http'){
 	})
 }
 
-function checkVersionGit(repo){
+function checkVersionGit(repo, useSemVer = false){
 	emit('log','Check Version (GitHub)');
 	return new Promise( async (resolve, reject) => {
 		let status = false;
@@ -426,7 +442,7 @@ function checkVersionGit(repo){
 			remote_version = release.tag_name.replace('v', '');
 			
 			// Check if remote version is newer
-			if(isNewerVersion(remote_version, app.getVersion())){
+			if(isNewerVersion(remote_version, app.getVersion(), useSemVer)){
 				isNew = true;
 				await tools.ensureDir(temp_dir);
 				
