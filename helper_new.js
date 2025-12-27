@@ -451,6 +451,22 @@ function initApis() {
 
 let masterConfigs = {};
 
+function _isConfigLogEnabled(options){
+	if(options && options.log) return true;
+	try {
+		const v = process && process.env ? process.env.ELECTRON_HELPER_CONFIG_LOG : undefined;
+		if(v === '1' || v === 'true' || v === 'yes') return true;
+	} catch(e) {}
+	return false;
+}
+
+function _cfgLog(prefix, name, extra){
+	try {
+		const msg = extra ? (prefix + ' ' + name + ' ' + extra) : (prefix + ' ' + name);
+		console.log(msg);
+	} catch(e) {}
+}
+
 // This is the core file-handling logic, adapted from the old `config` function.
 async function _loadAndWatchConfigFile(filePath, defaultConfig, force, migrate) {
     return new Promise(async (resolve, reject) => {
@@ -552,7 +568,9 @@ const config = {
         
 		const migrate = (options && typeof options.migrate === 'function') ? options.migrate : null;
 		const force = options && options.force ? true : false;
+		const logEnabled = _isConfigLogEnabled(options);
 		const configObj = await _loadAndWatchConfigFile(filePath, defaultConfig, force, migrate);
+		configObj.__log = logEnabled;
         masterConfigs[name] = configObj;
 
         // Ensure IPC handlers are only set up once.
@@ -564,11 +582,19 @@ const config = {
                     console.error(`Config '${configName}' not initialized in main process.`);
                     return null;
                 }
+				if(masterConfigs[configName].__log){
+					_cfgLog('[config-get]', configName, 'sender=' + e.senderId);
+				}
                 return masterConfigs[configName].data;
             });
 
             ipcMain.handle('config-set', (e, { name, data }) => {
                 if (masterConfigs[name]) {
+					if(masterConfigs[name].__log){
+						let k = 0;
+						try { k = data && typeof data === 'object' ? Object.keys(data).length : 0; } catch(err) {}
+						_cfgLog('[config-set]', name, 'sender=' + e.senderId + ' keys=' + k);
+					}
                     masterConfigs[name].data = data;
                     masterConfigs[name].write(); // This is the debounced save-to-file method.
                     
@@ -583,8 +609,18 @@ const config = {
         
         // Return a subset of the config object for direct use in main process if needed.
         return {
-            get: () => masterConfigs[name].data,
-            set: (newData) => {
+			get: () => {
+				if(masterConfigs[name].__log){
+					_cfgLog('[config.get]', name, 'process=main');
+				}
+				return masterConfigs[name].data;
+			},
+			set: (newData) => {
+				if(masterConfigs[name].__log){
+					let k = 0;
+					try { k = newData && typeof newData === 'object' ? Object.keys(newData).length : 0; } catch(err) {}
+					_cfgLog('[config.set]', name, 'process=main keys=' + k);
+				}
                 masterConfigs[name].data = newData;
                 masterConfigs[name].write();
                 tools.broadcast(`config-updated-${name}`, newData);
@@ -593,12 +629,21 @@ const config = {
         };
     },
 
-    initRenderer: async (name, updateCallback) => {
+	initRenderer: async (name, updateCallback, options = null) => {
         if (context_type === 'browser') {
             throw new Error('helper.config.initRenderer can only be called from a renderer process.');
         }
+		// Backward-compatible overload: initRenderer(name, optionsObject)
+		if(updateCallback && typeof updateCallback === 'object' && !options){
+			options = updateCallback;
+			updateCallback = null;
+		}
+		const logEnabled = _isConfigLogEnabled(options);
 
         let localConfig = await ipcRenderer.invoke('config-get', name);
+		if(logEnabled){
+			_cfgLog('[config.initRenderer]', name, 'pid=' + process.pid);
+		}
 
         ipcRenderer.on(`config-updated-${name}`, (e, newData) => {
             localConfig = newData;
@@ -608,8 +653,18 @@ const config = {
         });
 
         return {
-            get: () => localConfig,
-            set: (newData) => {
+			get: () => {
+				if(logEnabled){
+					_cfgLog('[config.get]', name, 'pid=' + process.pid);
+				}
+				return localConfig;
+			},
+			set: (newData) => {
+				if(logEnabled){
+					let k = 0;
+					try { k = newData && typeof newData === 'object' ? Object.keys(newData).length : 0; } catch(err) {}
+					_cfgLog('[config.set]', name, 'pid=' + process.pid + ' keys=' + k);
+				}
                 localConfig = newData; // Optimistic update of local copy
                 ipcRenderer.invoke('config-set', { name: name, data: newData });
             }
