@@ -452,7 +452,7 @@ function initApis() {
 let masterConfigs = {};
 
 // This is the core file-handling logic, adapted from the old `config` function.
-async function _loadAndWatchConfigFile(filePath, defaultConfig, force) {
+async function _loadAndWatchConfigFile(filePath, defaultConfig, force, migrate) {
     return new Promise(async (resolve, reject) => {
         let cnf = {};
         cnf.data = defaultConfig;
@@ -490,10 +490,13 @@ async function _loadAndWatchConfigFile(filePath, defaultConfig, force) {
         };
         cnf.interval = setInterval(cnf.write, 3000);
 
-        if (!(await tools.fileExists(filePath))) {
-            await tools.writeJSON(filePath, cnf.data);
-            resolve(cnf);
-        } else {
+		if (!(await tools.fileExists(filePath))) {
+			if(migrate && typeof migrate === 'function'){
+				try { cnf.data = migrate(cnf.data, defaultConfig) || cnf.data; } catch(e) {}
+			}
+			await tools.writeJSON(filePath, cnf.data);
+			resolve(cnf);
+		} else {
             let loadedData = null;
             try {
                 loadedData = await tools.readJSON(filePath);
@@ -512,8 +515,26 @@ async function _loadAndWatchConfigFile(filePath, defaultConfig, force) {
                     loadedData = defaultConfig;
                 }
             }
-            // Merge loaded data with default config to ensure new settings are present
-            cnf.data = { ...defaultConfig, ...loadedData };
+			// Migration/repair hook (preferred) OR shallow merge fallback.
+			// NOTE: shallow merge will drop nested defaults, so migrations should repair nested objects.
+			if(migrate && typeof migrate === 'function'){
+				try {
+					cnf.data = migrate(loadedData, defaultConfig) || { ...defaultConfig, ...loadedData };
+				} catch(e) {
+					cnf.data = { ...defaultConfig, ...loadedData };
+				}
+			}
+			else {
+				cnf.data = { ...defaultConfig, ...loadedData };
+			}
+
+			// Force a write soon if the migrated/merged data differs from file content.
+			// Keep cnf.backup as the original file snapshot so cnf.writeFile() detects changes.
+			try {
+				cnf.backup = JSON.stringify(loadedData, null, 4);
+			} catch(e) {
+				cnf.backup = JSON.stringify(defaultConfig, null, 4);
+			}
             resolve(cnf);
         }
     });
@@ -521,7 +542,7 @@ async function _loadAndWatchConfigFile(filePath, defaultConfig, force) {
 
 
 const config = {
-    initMain: async (name, defaultConfig = {}) => {
+	initMain: async (name, defaultConfig = {}, options = null) => {
         if (context_type !== 'browser') {
             throw new Error('helper.config.initMain can only be called from the main process.');
         }
@@ -529,7 +550,9 @@ const config = {
         const userPath = app.getPath('userData');
         const filePath = path.join(userPath, `${name}.json`);
         
-        const configObj = await _loadAndWatchConfigFile(filePath, defaultConfig);
+		const migrate = (options && typeof options.migrate === 'function') ? options.migrate : null;
+		const force = options && options.force ? true : false;
+		const configObj = await _loadAndWatchConfigFile(filePath, defaultConfig, force, migrate);
         masterConfigs[name] = configObj;
 
         // Ensure IPC handlers are only set up once.
