@@ -640,9 +640,9 @@ const config = {
 		}
 		const logEnabled = _isConfigLogEnabled(options);
 
-        let localConfig = await ipcRenderer.invoke('config-get', name);
+        let localConfig = (options && options.initialConfig) ? options.initialConfig : await ipcRenderer.invoke('config-get', name);
 		if(logEnabled){
-			_cfgLog('[config.initRenderer]', name, 'pid=' + process.pid);
+			_cfgLog('[config.initRenderer]', name, 'pid=' + process.pid + (options && options.initialConfig ? ' (using initialConfig)' : ''));
 		}
 
         ipcRenderer.on(`config-updated-${name}`, (e, newData) => {
@@ -752,13 +752,19 @@ tools.browserWindow = (template='default', options) => {
 				win.loadURL('data:text/html;charset=UTF-8,' + encodeURIComponent(html), { baseURLForDataURL: `file://${ap}/` })
 			}
 			if(options && options.devTools){ win.toggleDevTools(); }
-			win.webContents.once('did-finish-load', () => {
-				if(options && options.init_data){ win.webContents.send('init_data', options.init_data); }
+			
+			const sendInitData = () => {
+				if(options && options.init_data){ 
+					options.init_data.windowId = win.id;
+					win.webContents.send('init_data', options.init_data); 
+				}
 				win.webContents.executeJavaScript(/*javascript*/`
 					try{ if(typeof electron_helper !== 'undefined' && electron_helper) { electron_helper.id = ${win.id}; } }catch(e){ console.error('set electron_helper.id failed', e); }
 				`).catch((e) => { console.error('executeJavaScript failed for set id', e); });
 				resolve(win);
-			})
+			};
+
+			win.webContents.once('dom-ready', sendInitData);
 		}
 		else {
 			let w_id = await ipcRenderer.invoke('tools', {command:'newWindow', data:{template:template, options:options}})
