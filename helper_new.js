@@ -741,6 +741,23 @@ tools.browserWindow = (template='default', options) => {
 				win_options.parent = BrowserWindow.fromId(win_options.parentID);
 			}
 			win = new BrowserWindow(win_options);
+			
+			// Notify stage on window close (Robust cleanup)
+			if (options && options.init_data && options.init_data.stageId) {
+				const stageId = options.init_data.stageId;
+				const winType = options.init_data.type;
+				const winId = win.id;
+				win.on('closed', () => {
+					try {
+						// stageId is a BrowserWindow ID, so we use BrowserWindow.fromId
+						const stageWin = BrowserWindow.fromId(stageId);
+						if(stageWin && !stageWin.isDestroyed()){
+							stageWin.webContents.send('window-closed', { type: winType, windowId: winId });
+						}
+					} catch(e){}
+				});
+			}
+
 			let ap = app.getAppPath();
 			if(options && options.file){ win.loadFile(options.file); }
 			else if(options && options.url){ win.loadURL(options.url); }
