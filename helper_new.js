@@ -184,8 +184,18 @@ function initApis() {
                     handle: (e, req) => {
                         fb('Hooked Event: ' + req.data);
                         let browserWindow = BrowserWindow.fromWebContents(e.sender);
-                        browserWindow.on(req.data, (_event, _data) => { browserWindow.send('window_event' + req.event_id, {type:req.data, data:_data}); });
-                        return {status:true};
+                        browserWindow.on(req.data, (_event, _data) => {
+                            // Guard against sending to destroyed or not-yet-ready window
+                            try {
+                                if (!browserWindow || browserWindow.isDestroyed()) return;
+                                if (!browserWindow.webContents) return;
+                                if (browserWindow.webContents.isDestroyed()) return;
+                                browserWindow.webContents.send('window_event' + req.event_id, {type:req.data, data:_data});
+                            } catch (err) {
+                                // Silently ignore - window may be in transition state during creation/destruction
+                            }
+                        });
+                        return{status:true};
                     }
                 }
             },
@@ -803,8 +813,12 @@ tools.sendToMain = (channel, data) => {
 tools.sendToId = async (id, channel, data) => {
 	if(context_type == 'browser'){
 		let win = BrowserWindow.fromId(id);
-		if(win && !win.isDestroyed()) {
-			win.webContents.send(channel, data);
+		if(win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+			try {
+				win.webContents.send(channel, data);
+			} catch (err) {
+				console.error('Error sending from webFrameMain: ', err);
+			}
 		}
 	}
 	else {
@@ -816,7 +830,12 @@ tools.broadcast = async (channel, data) => {
 	if(context_type == 'browser'){
 		let wins = BrowserWindow.getAllWindows();
 		for(let i=0; i<wins.length; i++){
-			wins[i].webContents.send(channel, data);
+			if(wins[i].isDestroyed() || !wins[i].webContents || wins[i].webContents.isDestroyed()) continue;
+			try {
+				wins[i].webContents.send(channel, data);
+			} catch (err) {
+				console.error('Error sending from webFrameMain: ', err);
+			}
 		}
 	}
 	else {
