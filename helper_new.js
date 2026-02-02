@@ -292,6 +292,9 @@ function initApis() {
             shell: {
                 showItemInFolder: {
                     handle: (e, req) => shell.showItemInFolder(req.data)
+                },
+                openPath: {
+                    handle: (e, req) => shell.openPath(req.data)
                 }
             },
         };
@@ -440,6 +443,9 @@ function initApis() {
             shell: {
                 showItemInFolder: {
                     invoke: async (fp) => ipcRenderer.invoke('shell', {command:'showItemInFolder', data:fp})
+                },
+                openPath: {
+                    invoke: async (fp) => ipcRenderer.invoke('shell', {command:'openPath', data:fp})
                 }
             }
         };
