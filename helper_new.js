@@ -828,7 +828,13 @@ tools.sendToId = async (id, channel, data) => {
 		}
 	}
 	else {
-		await ipcRenderer.invoke('tools', {command:'sendToId', data:{id:id, channel:channel, data:data}});
+		// Direct renderer-to-renderer communication, bypassing main process
+		// This avoids main process logging and is more efficient for high-frequency data
+		try {
+			ipcRenderer.sendTo(id, channel, data);
+		} catch (err) {
+			// Window may not exist, fail silently
+		}
 	}
 }
 
