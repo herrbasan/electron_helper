@@ -1023,6 +1023,11 @@ tools.getFilesRecursive = function(fp, filter){
 }
 
 tools.getFilesR = async function(dir, filter) {
+	// Guard against empty or invalid directory path
+	if (!dir || typeof dir !== 'string') {
+		return [];
+	}
+	
 	const dirents = await fs.readdir(dir, { withFileTypes: true });
 	const files = await Promise.all(dirents.map((dirent) => {
 		const res = path.resolve(dir, dirent.name);
