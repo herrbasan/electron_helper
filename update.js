@@ -1302,9 +1302,8 @@ function renderWindow(type){
 								<h1>...</h1>
 								<div class="version">...</div>
 								<div class="company" style="margin-top: 3rem; margin-bottom: 1rem;">
-									<div>Fa. David A. Renelt</div>
-									<div>New Media Development</div>
-									<div><a href="mailto:admin@raum.com">admin@raum.com</a></div>
+									<div>Herrbasan</div>
+									<div><a href="https://github.com/herrbasan/">GitHub</a></div>
 								</div>
 							</div>
 						</div>
