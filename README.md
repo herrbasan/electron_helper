@@ -16,6 +16,7 @@ This release introduces significant improvements and new features in preparation
 ### Files
 - `helper.js`: Original preload script (default).
 - `helper_new.js`: Refactored version with advanced features (non-default).
+- `helper_new_ctxb.js`: Experimental contextBridge support for modern security (nodeIntegration: false).
 - `test.js`: Test harness for API validation.
 - `update.js`: Update utilities.
 
